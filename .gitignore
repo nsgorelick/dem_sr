@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# Generated model artifacts
+*.pt
+
+# Generated evaluation/export outputs
+*.json
+comparison/
+tdem_ingest/
+
+# Local scratch and logs
+*.log
+
+# Ignore editor/temp files
+*.swp
+*.swo
