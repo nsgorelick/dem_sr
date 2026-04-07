@@ -101,6 +101,12 @@ Current behavior:
   - slope RMSE
   - slope MAE in degrees
   - slope RMSE in degrees
+- optional per-patch JSON output via `--per-patch-json`
+- computes per-patch customer-example fields including:
+  - model vs `z_lr` deltas / percentage improvements
+  - model vs FABDEM deltas / percentage improvements
+  - `customer_example_score` for ranking
+- when `--prediction-source raster` is used, checks candidate raster availability on disk up front and skips stems that do not have the requested candidate file present
 
 Important: when evaluating `raster`, invalid or masked pixels in the external raster are excluded from the weighted metrics for that source.
 
@@ -130,6 +136,35 @@ Current defaults:
 
 - `--max-tries 5`
 - top-level logging level back to `ERROR`
+
+### `upload_customer_example_predictions.py`
+
+New script created.
+
+Current behavior:
+
+- reads a manifest of selected patch stems
+- runs model inference and writes prediction GeoTIFFs for those stems
+- uploads TIFFs to GCS
+- submits Earth Engine ingestions into:
+  - `users/ngorelick/DTM/tmp/customer_example_predictions`
+- uses the Earth Engine Python API for asset listing / ingestion submission rather than relying on the `earthengine` CLI
+- strips non-finite `nodata` values from the ingest path so EE manifest submission succeeds
+
+### `make_customer_example_panels.py`
+
+New script created.
+
+Current behavior:
+
+- generates local `2x4` panel PNGs for selected chips
+- panels include:
+  - input DEM
+  - FABDEM
+  - model prediction
+  - ground truth
+  - hillshade of each of the above
+- uses shared robust stretches across the top-row elevation panels and separately across the bottom-row hillshade panels so each chip is visually comparable within a row
 
 ## Training Result
 
@@ -265,6 +300,17 @@ From `eval_holdout_model_zlr_fabdem.json`:
 
 ## What We Learned
 
+### TDEM_EDEM status
+
+The earlier TDEM bias-offset / vertical-datum detour is no longer the active issue after switching to a newer TDEM product.
+
+What matters for current status:
+
+- the old inline datum-correction attempt was backed out
+- the newer product removed the previously observed gross bias problem
+- `tdem_edem` remains available as an external comparison product in `export_comparison_dtms.py`
+- future TDEM evaluation should be treated as a straightforward comparison run against the current downloaded product, not as a current export-pipeline blocker
+
 ### Model vs `z_lr`
 
 The model clearly improves on the input DEM baseline.
@@ -320,6 +366,30 @@ Corrected FABDEM comparison:
   - slope MAE deg: `1.6927 -> 1.4098 deg` (`16.7%` better for model)
   - slope RMSE deg: `3.5172 -> 2.9654 deg` (`15.7%` better for model)
 
+### Customer example workflow
+
+Customer-example selection and packaging is now implemented end to end.
+
+What was added:
+
+- `eval_dem.py` can emit full per-patch metrics and ranking fields
+- a selected customer-example manifest was created in `customer_example_chips_manifest.txt`
+- the current manifest contains `23` chips:
+  - original top set
+  - one Portugal example
+  - ten additional chips added for broader coverage
+- model prediction TIFFs can be generated and uploaded to Earth Engine for any selected manifest via `upload_customer_example_predictions.py`
+- local `2x4` panel PNGs can be rendered via `make_customer_example_panels.py`
+
+Current status:
+
+- prediction TIFFs exist in `customer_example_predictions/tifs`
+- panel PNGs exist in `customer_example_predictions/panels`
+- the added `10` chips were submitted to:
+  - `users/ngorelick/DTM/tmp/customer_example_predictions`
+- submission metadata for that latest batch is recorded in:
+  - `customer_example_predictions/submitted_ingestions.json`
+
 ### Checkpoint / training-curve diagnosis
 
 The old checkpoints did **not** contain saved loss curves, so direct inspection of training flattening had to be done by re-evaluating checkpoints on a fixed holdout subset.
@@ -362,19 +432,21 @@ Known outputs in repo:
 - `eval_holdout_model_15ep.json`
 - `eval_holdout_zlr.json`
 - `eval_holdout_model_zlr_fabdem.json`
+- `eval_holdout_model_zlr_fabdem_per_patch.json`
 - `smoke_eval_seed42.json`
+- `customer_example_chips_manifest.txt`
+- `customer_example_added10_manifest.txt`
+- `customer_example_predictions/tifs`
+- `customer_example_predictions/panels`
+- `customer_example_predictions/submitted_ingestions.json`
 
 ## Recommended Next Steps
 
-1. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
-2. Add or run per-zone / per-country summaries for corrected FABDEM to see where it helps most relative to `z_lr`.
-3. Evaluate `tdem_edem` once enough patches are downloaded.
-4. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
-5. Build a final comparison table across:
-   - model
-   - `z_lr`
-   - FABDEM
-   - `TDEM_EDEM`
+1. Check Earth Engine task completion for the customer-example asset submissions and verify that all selected chips are available in `users/ngorelick/DTM/tmp/customer_example_predictions`.
+2. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
+3. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
+4. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
+5. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
 
 ## Notes For Next Chat
 
@@ -385,5 +457,6 @@ If restarting in a fresh chat, mention:
 - corrected FABDEM is now a credible baseline and is better than `z_lr` on most holdout metrics, but still worse than the model
 - checkpoint analysis suggests training flattens fairly early, around epochs `3-6`
 - new training checkpoints now store train/val loss curves
-- `eval_dem.py` already supports multi-source evaluation in one pass
+- `eval_dem.py` already supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection
 - `export_comparison_dtms.py` already exports separate per-product patch rasters from Earth Engine
+- the current customer-example package includes a `23`-chip manifest, local prediction TIFFs, local panel PNGs, and EE uploads for the selected examples
