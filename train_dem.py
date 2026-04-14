@@ -14,7 +14,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
-from dem_film_unet import DemFilmUNet, loss_dem
+from dem_film_unet import ARCH_CHOICES, ARCH_FILM, create_model, loss_dem
 from local_patch_dataset import (
     LocalDemPatchDataset,
     collate_dem_batch,
@@ -52,7 +52,7 @@ def apply_rotflip_augmentation(sample: dict[str, torch.Tensor]) -> dict[str, tor
 
 def save_checkpoint(
     path: Path,
-    model: DemFilmUNet,
+    model: torch.nn.Module,
     *,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
@@ -120,6 +120,18 @@ def main() -> None:
         "--precomputed-weight",
         action="store_true",
         help="Use stack weight band instead of recomputing W",
+    )
+    p.add_argument(
+        "--arch",
+        choices=ARCH_CHOICES,
+        default=ARCH_FILM,
+        help="Model architecture variant",
+    )
+    p.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume training from a checkpoint written by this script",
     )
     args = p.parse_args()
 
@@ -191,7 +203,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    model = DemFilmUNet().to(device)
+    model = create_model(args.arch).to(device)
+    log.info("Architecture: %s", args.arch)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     amp_enabled = args.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -205,8 +218,65 @@ def main() -> None:
         "epoch_seconds": [],
         "samples_per_second": [],
     }
+    start_epoch = 0
 
-    for epoch in range(args.epochs):
+    if args.resume is not None:
+        if not args.resume.is_file():
+            log.error("Resume checkpoint not found: %s", args.resume)
+            sys.exit(1)
+        load_kw: dict = {"map_location": "cpu"}
+        try:
+            ckpt = torch.load(args.resume, weights_only=False, **load_kw)
+        except TypeError:
+            ckpt = torch.load(args.resume, **load_kw)
+        if not isinstance(ckpt, dict) or "model" not in ckpt:
+            log.error("Unsupported resume checkpoint format: %s", args.resume)
+            sys.exit(1)
+
+        ckpt_args = ckpt.get("args")
+        if isinstance(ckpt_args, dict):
+            ckpt_arch = ckpt_args.get("arch", ARCH_FILM)
+            if ckpt_arch != args.arch:
+                log.error(
+                    "Resume arch mismatch: checkpoint=%s current=%s. "
+                    "Pass --arch %s or use a matching checkpoint.",
+                    ckpt_arch,
+                    args.arch,
+                    ckpt_arch,
+                )
+                sys.exit(1)
+            ckpt_data_root = ckpt.get("data_root")
+            if ckpt_data_root is not None and str(ckpt_data_root) != str(args.data_root):
+                log.warning(
+                    "Resume data_root differs: checkpoint=%s current=%s",
+                    ckpt_data_root,
+                    args.data_root,
+                )
+
+        model.load_state_dict(ckpt["model"], strict=True)
+        if "optimizer" in ckpt:
+            opt.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt:
+            try:
+                scaler.load_state_dict(ckpt["scaler"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not restore AMP scaler state: %s", exc)
+
+        ckpt_history = ckpt.get("history")
+        if isinstance(ckpt_history, dict):
+            history = ckpt_history
+
+        start_epoch = int(ckpt.get("epoch", 0))
+        if start_epoch >= args.epochs:
+            log.error(
+                "Resume epoch (%d) is not less than requested --epochs (%d).",
+                start_epoch,
+                args.epochs,
+            )
+            sys.exit(1)
+        log.info("Resumed from %s at completed epoch %d", args.resume, start_epoch)
+
+    for epoch in range(start_epoch, args.epochs):
         epoch_start = time.perf_counter()
         model.train()
         running = 0.0

@@ -1,10 +1,15 @@
-"""Residual dual-encoder U-Net with global FiLM (dd.md §4, §8.2–8.3)."""
+"""DEM SR model variants and shared losses/utilities."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+ARCH_FILM = "film_unet"
+ARCH_GATED = "gated_unet"
+ARCH_CHOICES = (ARCH_FILM, ARCH_GATED)
 
 
 class ResBlock(nn.Module):
@@ -64,6 +69,26 @@ class GlobalFiLM(nn.Module):
         gamma = torch.tanh(gamma).unsqueeze(-1).unsqueeze(-1)
         beta = beta.unsqueeze(-1).unsqueeze(-1)
         return (1.0 + alpha * gamma) * f_dem + alpha * beta
+
+
+class SpatialGatedFusion(nn.Module):
+    """Fuse AE features into DEM features with per-pixel gating."""
+
+    def __init__(self, c_ae: int, c_dem: int, trust_ch: int = 4) -> None:
+        super().__init__()
+        self.ae_to_dem = nn.Conv2d(c_ae, c_dem, 1, bias=False)
+        self.gate = nn.Conv2d(c_dem + c_dem + trust_ch, c_dem, 1, bias=True)
+
+    def forward(
+        self,
+        f_dem: torch.Tensor,
+        f_ae: torch.Tensor,
+        trust: torch.Tensor,
+        alpha: float,
+    ) -> torch.Tensor:
+        a = self.ae_to_dem(f_ae)
+        g = torch.sigmoid(self.gate(torch.cat([f_dem, a, trust], dim=1)))
+        return f_dem + alpha * g * a
 
 
 class DemFilmUNet(nn.Module):
@@ -135,6 +160,95 @@ class DemFilmUNet(nn.Module):
         r = self.head(x)
         r = self.r_cap * torch.tanh(r / self.r_cap)
         return z_lr + r
+
+
+class DemGatedFusionUNet(nn.Module):
+    """Dual-encoder residual U-Net with spatial gated AE fusion."""
+
+    dem_ch = (32, 64, 128, 256)
+    ae_ch = (16, 32, 64, 128)
+    gate_alphas = (0.10, 0.15, 0.20)
+
+    def __init__(self, r_cap: float = 20.0) -> None:
+        super().__init__()
+        self.r_cap = r_cap
+
+        d0, d1, d2, d3 = self.dem_ch
+        a0, a1, a2, a3 = self.ae_ch
+
+        self.dem_b0 = nn.Sequential(ResBlock(5, d0), ResBlock(d0, d0))
+        self.down_d1 = down_layer(d0, d1)
+        self.dem_b1 = nn.Sequential(ResBlock(d1, d1), ResBlock(d1, d1))
+        self.down_d2 = down_layer(d1, d2)
+        self.dem_b2 = nn.Sequential(ResBlock(d2, d2), ResBlock(d2, d2))
+        self.down_d3 = down_layer(d2, d3)
+        self.dem_b3 = nn.Sequential(ResBlock(d3, d3), ResBlock(d3, d3))
+
+        self.ae_b0 = ResBlock(64, a0)
+        self.down_a1 = down_layer(a0, a1)
+        self.ae_b1 = ResBlock(a1, a1)
+        self.down_a2 = down_layer(a1, a2)
+        self.ae_b2 = ResBlock(a2, a2)
+        self.down_a3 = down_layer(a2, a3)
+        self.ae_b3 = ResBlock(a3, a3)
+
+        self.gate1 = SpatialGatedFusion(a1, d1)
+        self.gate2 = SpatialGatedFusion(a2, d2)
+        self.gate3 = SpatialGatedFusion(a3, d3)
+
+        self.dec3 = nn.Sequential(ResBlock(d3, d3), ResBlock(d3, d3))
+        self.up2 = Up(d3, d2)
+        self.dec2 = nn.Sequential(ResBlock(d2 + d2, d2), ResBlock(d2, d2))
+        self.up1 = Up(d2, d1)
+        self.dec1 = nn.Sequential(ResBlock(d1 + d1, d1), ResBlock(d1, d1))
+        self.up0 = Up(d1, d0)
+        self.dec0 = nn.Sequential(ResBlock(d0 + d0, d0), ResBlock(d0, d0))
+        self.head = nn.Conv2d(d0, 1, 1)
+
+    def _trust_pyramid(self, x_dem: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # x_dem channels: [z_lr, u_enc, m_bld, m_wp, m_ws]
+        trust = x_dem[:, 1:, :, :]
+        t1 = F.avg_pool2d(trust, kernel_size=2, stride=2)
+        t2 = F.avg_pool2d(t1, kernel_size=2, stride=2)
+        t3 = F.avg_pool2d(t2, kernel_size=2, stride=2)
+        return t1, t2, t3
+
+    def forward(self, x_dem: torch.Tensor, x_ae: torch.Tensor, z_lr: torch.Tensor) -> torch.Tensor:
+        xd0 = self.dem_b0(x_dem)
+        xd1 = self.dem_b1(self.down_d1(xd0))
+        xd2 = self.dem_b2(self.down_d2(xd1))
+        xd3 = self.dem_b3(self.down_d3(xd2))
+
+        xa0 = self.ae_b0(x_ae)
+        xa1 = self.ae_b1(self.down_a1(xa0))
+        xa2 = self.ae_b2(self.down_a2(xa1))
+        xa3 = self.ae_b3(self.down_a3(xa2))
+
+        t1, t2, t3 = self._trust_pyramid(x_dem)
+        a1, a2, a3 = self.gate_alphas
+        xd1 = self.gate1(xd1, xa1, t1, a1)
+        xd2 = self.gate2(xd2, xa2, t2, a2)
+        xd3 = self.gate3(xd3, xa3, t3, a3)
+
+        x = self.dec3(xd3)
+        x = self.up2(x)
+        x = self.dec2(torch.cat([x, xd2], dim=1))
+        x = self.up1(x)
+        x = self.dec1(torch.cat([x, xd1], dim=1))
+        x = self.up0(x)
+        x = self.dec0(torch.cat([x, xd0], dim=1))
+        r = self.head(x)
+        r = self.r_cap * torch.tanh(r / self.r_cap)
+        return z_lr + r
+
+
+def create_model(arch: str, *, r_cap: float = 20.0) -> nn.Module:
+    """Factory for supported DEM SR architectures."""
+    if arch == ARCH_FILM:
+        return DemFilmUNet(r_cap=r_cap)
+    if arch == ARCH_GATED:
+        return DemGatedFusionUNet(r_cap=r_cap)
+    raise ValueError(f"Unsupported arch={arch!r}; expected one of {ARCH_CHOICES}")
 
 
 def terrain_slope(z: torch.Tensor, pixel_size_m: float = 10.0) -> torch.Tensor:

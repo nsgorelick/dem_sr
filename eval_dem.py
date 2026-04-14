@@ -18,7 +18,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from dem_film_unet import DemFilmUNet, slope_to_degrees, terrain_slope
+from dem_film_unet import ARCH_CHOICES, ARCH_FILM, create_model, slope_to_degrees, terrain_slope
 from local_patch_dataset import (
     LocalDemPatchDataset,
     collate_dem_batch,
@@ -219,7 +219,7 @@ def run_eval(
     device: torch.device,
     use_amp: bool,
     prediction_sources: list[str],
-    model: DemFilmUNet | None = None,
+    model: torch.nn.Module | None = None,
     collect_per_patch: bool = False,
 ) -> tuple[dict[str, dict[str, float]], list[dict[str, object]]]:
     """Aggregate weighted MAE/RMSE and optionally collect per-patch rows."""
@@ -363,11 +363,18 @@ def main() -> None:
         default=None,
         help="Write one JSON row per patch with per-source metrics and improvement columns",
     )
+    p.add_argument(
+        "--arch",
+        choices=ARCH_CHOICES,
+        default=None,
+        help="Model architecture override (default: checkpoint args.arch or film_unet)",
+    )
     args = p.parse_args()
     prediction_sources = list(dict.fromkeys(args.prediction_source))
 
     ckpt = None
     state = None
+    ckpt_arch = None
     if "model" in prediction_sources:
         if not args.checkpoint.is_file():
             log.error("Checkpoint not found: %s", args.checkpoint)
@@ -378,6 +385,10 @@ def main() -> None:
         except TypeError:
             ckpt = torch.load(args.checkpoint, **load_kw)
         state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+        if isinstance(ckpt, dict):
+            ckpt_args = ckpt.get("args")
+            if isinstance(ckpt_args, dict):
+                ckpt_arch = ckpt_args.get("arch")
 
     data_root = args.data_root or (
         ckpt.get("data_root") if isinstance(ckpt, dict) else None
@@ -465,8 +476,10 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = None
     if "model" in prediction_sources:
-        model = DemFilmUNet().to(device)
+        arch = args.arch or ckpt_arch or ARCH_FILM
+        model = create_model(arch).to(device)
         model.load_state_dict(state, strict=True)
+        log.info("Model architecture: %s", arch)
     log.info("Device: %s", device)
     log.info("Prediction sources: %s", ", ".join(prediction_sources))
 

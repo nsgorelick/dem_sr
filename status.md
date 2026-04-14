@@ -13,6 +13,7 @@ This repo has been patched to support:
   - input baseline `z_lr`
   - external per-patch rasters such as FABDEM
 - export of external comparison DTMs from Earth Engine to the same 10 m patch grid
+- selectable model architectures (`--arch`) and training resume (`--resume`) for architecture experiments
 
 Current environment assumptions:
 
@@ -72,20 +73,45 @@ This is what allows:
 Current behavior:
 
 - local-only training from `/data/training`
+- `--arch` selects the model: `film_unet` (default, FiLM dual-encoder U-Net) or `gated_unet` (spatial gated AE fusion at S1–S3)
+- `--resume PATH` continues from a checkpoint written by this script (restores model, optimizer, scaler, history; next epoch is `saved_epoch + 1`). Architecture must match the checkpoint (`--arch`).
 - `tqdm` progress bar
 - per-epoch checkpoints like `dem_film_unet_epoch_015.pt`
+- optional random `90/180/270` rotations and horizontal/vertical flips for training samples via `--augment-rotflip` (default enabled)
 - checkpoints now include loss history:
   - `history["train_loss"]`
+  - `history["train_elev_loss"]`
+  - `history["train_slope_loss"]`
   - `history["val_loss"]`
+  - `history["val_elev_loss"]`
+  - `history["val_slope_loss"]`
+  - `history["epoch_seconds"]`
+  - `history["samples_per_second"]`
   - `train_loss_curve`
   - `val_loss_curve`
+- checkpoints also include:
+  - optimizer state
+  - AMP scaler state
+  - `train_size`
+  - `val_size`
 - final checkpoint `dem_film_unet.pt`
 - modern AMP usage
+
+### `dem_film_unet.py`
+
+- `DemFilmUNet`: residual dual-encoder U-Net with global FiLM on AE features (design doc v1).
+- `DemGatedFusionUNet`: same backbone; replaces FiLM with **spatial gated fusion** at S1–S3: AE features projected to DEM width, combined with DEM features and a **trust stack** (uncertainty + masks from `x_dem`) for per-pixel gating; output remains `z_lr + clamped residual`.
+- `create_model(arch)` factory; `ARCH_FILM` / `ARCH_GATED` constants.
+
+### `plan.md`
+
+- Tracks architecture exploration runs (screening protocol, example train/eval commands, TODO list) without changing training data or chip size.
 
 ### `eval_dem.py`
 
 Current behavior:
 
+- `--arch` overrides model class when loading `--checkpoint` (optional; defaults to `arch` stored in checkpoint `args`, else `film_unet`)
 - supports `--prediction-source` with one or more of:
   - `model`
   - `z_lr`
@@ -220,6 +246,22 @@ python eval_dem.py \
   --output-json eval_holdout_model_zlr_fabdem.json
 ```
 
+### Evaluate augmented model + `z_lr` + FABDEM in one pass
+
+```bash
+python eval_dem.py \
+  --prediction-source model z_lr raster \
+  --checkpoint dem_film_unet_aug15.pt \
+  --manifest holdout_manifest_seed42.txt \
+  --candidate-root /data/comparison \
+  --candidate-product fabdem \
+  --candidate-band 1 \
+  --batch-size 32 \
+  --workers 3 \
+  --amp \
+  --output-json eval_holdout_model_zlr_fabdem_aug15.json
+```
+
 ## Export Commands
 
 ### Export FABDEM patches
@@ -297,6 +339,20 @@ From `eval_holdout_model_zlr_fabdem.json`:
 - slope RMSE: `0.559958`
 - slope MAE deg: `1.6927 deg`
 - slope RMSE deg: `3.5172 deg`
+
+From `eval_holdout_model_zlr_fabdem_aug15.json`:
+
+### Model (`dem_film_unet_aug15.pt`)
+
+- patches: `15,052`
+- sum(W): `151,686,976.4171`
+- elev bias: `+0.1072 m`
+- elev MAE: `1.2488 m`
+- elev RMSE: `3.2199 m`
+- slope MAE: `0.033840`
+- slope RMSE: `0.559041`
+- slope MAE deg: `1.5131 deg`
+- slope RMSE deg: `3.0998 deg`
 
 ## What We Learned
 
@@ -422,16 +478,52 @@ Follow-up change made:
 
 - `train_dem.py` now writes loss history into every new checkpoint so future runs can be inspected without re-evaluating model files
 
+### Augmented 15-epoch run (`dem_film_unet_aug15.pt`)
+
+Training run settings (latest run):
+
+- batch size: `32`
+- workers: `3`
+- epochs: `15`
+- augmentation: `--augment-rotflip` enabled
+- checkpoint prefix: `dem_film_unet_aug15*.pt`
+
+Checkpoint-history summary:
+
+- train size: `135,469`
+- val size: `0` (no validation split in this run)
+- epoch 1 train loss: `1.4631`
+- epoch 15 train loss: `1.0485`
+- train loss dropped by about `28.3%` across 15 epochs
+
+Holdout comparison vs prior model (`dem_film_unet.pt`):
+
+- improved:
+  - elevation MAE: `1.3380 -> 1.2488 m`
+- regressed:
+  - elevation RMSE: `3.2045 -> 3.2199 m`
+  - slope MAE deg: `1.4098 -> 1.5131 deg`
+  - slope RMSE deg: `2.9654 -> 3.0998 deg`
+- bias shifted from `-0.4435 m` to `+0.1072 m`
+
+Interpretation:
+
+- simple rot/flip augmentation improved elevation MAE but hurt slope-sensitive metrics and slightly hurt elevation RMSE on the full holdout
+- this run is useful evidence, but it does not replace the current best checkpoint for overall multi-metric performance
+
 ## Current File Outputs
 
 Known outputs in repo:
 
 - `dem_film_unet.pt`
 - `dem_film_unet_epoch_015.pt` and other per-epoch checkpoints
+- `dem_film_unet_aug15.pt`
+- `dem_film_unet_aug15_epoch_015.pt` and other per-epoch checkpoints
 - `checkpoint_eval_subset_targeted_512.json`
 - `eval_holdout_model_15ep.json`
 - `eval_holdout_zlr.json`
 - `eval_holdout_model_zlr_fabdem.json`
+- `eval_holdout_model_zlr_fabdem_aug15.json`
 - `eval_holdout_model_zlr_fabdem_per_patch.json`
 - `smoke_eval_seed42.json`
 - `customer_example_chips_manifest.txt`
@@ -442,17 +534,21 @@ Known outputs in repo:
 
 ## Recommended Next Steps
 
-1. Check Earth Engine task completion for the customer-example asset submissions and verify that all selected chips are available in `users/ngorelick/DTM/tmp/customer_example_predictions`.
-2. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
-3. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
-4. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
-5. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
+1. Screen alternative architectures (`gated_unet` and later candidates) with short runs and holdout `eval_dem.py`; use `--resume` to continue after worker or environment tweaks.
+2. Check Earth Engine task completion for the customer-example asset submissions and verify that all selected chips are available in `users/ngorelick/DTM/tmp/customer_example_predictions`.
+3. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
+4. Run the same augmented training recipe with a small validation split (or equivalent holdout checkpoint sweep) so augmentation effects can be selected by validation/holdout metrics rather than train loss alone.
+5. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
+6. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
+7. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
 
 ## Notes For Next Chat
 
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
+- `train_dem.py` supports `--arch film_unet|gated_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` when loading checkpoints
+- `plan.md` tracks architecture experiments and example commands
 - the FABDEM benchmark was fixed by correcting a half-patch grid offset in the comparison exporter
 - corrected FABDEM is now a credible baseline and is better than `z_lr` on most holdout metrics, but still worse than the model
 - checkpoint analysis suggests training flattens fairly early, around epochs `3-6`
