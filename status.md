@@ -73,7 +73,7 @@ This is what allows:
 Current behavior:
 
 - local-only training from `/data/training`
-- `--arch` selects the model: `film_unet` (default, FiLM dual-encoder U-Net) or `gated_unet` (spatial gated AE fusion at S1–S3)
+- `--arch` selects the model: `film_unet` (default, FiLM dual-encoder U-Net), `gated_unet` (spatial gated AE fusion at S1–S3), `xattn_unet` (FiLM at S1; windowed DEM→AE cross-attention at S2–S3), `hybrid_tf_unet` (FiLM at S1–S3; windowed self-attention + FFN bottleneck at S3), or `rcan_ae_unet` (RCAN-style residual channel-attention trunk with AE conditioning)
 - `--resume PATH` continues from a checkpoint written by this script (restores model, optimizer, scaler, history; next epoch is `saved_epoch + 1`). Architecture must match the checkpoint (`--arch`).
 - `tqdm` progress bar
 - per-epoch checkpoints like `dem_film_unet_epoch_015.pt`
@@ -101,7 +101,10 @@ Current behavior:
 
 - `DemFilmUNet`: residual dual-encoder U-Net with global FiLM on AE features (design doc v1).
 - `DemGatedFusionUNet`: same backbone; replaces FiLM with **spatial gated fusion** at S1–S3: AE features projected to DEM width, combined with DEM features and a **trust stack** (uncertainty + masks from `x_dem`) for per-pixel gating; output remains `z_lr + clamped residual`.
-- `create_model(arch)` factory; `ARCH_FILM` / `ARCH_GATED` constants.
+- `DemCrossAttnFusionUNet`: FiLM at S1; **windowed cross-attention** (DEM queries, AE keys/values) in 8×8 windows at S2 and S3, then gated residual with the trust stack (Plan B2-style).
+- `DemHybridTransformerUNet`: same FiLM fusion as baseline; after S3 FiLM, **two** `BottleneckTransformerBlock` stacks (8×8 windowed self-attention + conv FFN, residual), then U-Net decode (DSRT-style global context at coarse scale).
+- `DemRCANAE`: RCAN-style model with channel-attention residual groups at full resolution, AE channel-gated conditioning, and residual output head (`z_lr + clamped residual`).
+- `create_model(arch)` factory; `ARCH_FILM` / `ARCH_GATED` / `ARCH_XATTN` / `ARCH_HYBRID_TF` / `ARCH_RCAN_AE` constants.
 
 ### `plan.md`
 
@@ -547,7 +550,7 @@ Known outputs in repo:
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
-- `train_dem.py` supports `--arch film_unet|gated_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` when loading checkpoints
+- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` when loading checkpoints
 - `plan.md` tracks architecture experiments and example commands
 - the FABDEM benchmark was fixed by correcting a half-patch grid offset in the comparison exporter
 - corrected FABDEM is now a credible baseline and is better than `z_lr` on most holdout metrics, but still worse than the model

@@ -27,10 +27,10 @@ This document tracks architecture experiments while keeping the same training st
 
 ## Candidate Architectures
 
-1. Spatial Gated Fusion U-Net (replace global FiLM with local gated fusion)
-2. Windowed Cross-Attention Fusion U-Net (coarse scales only)
-3. Hybrid Conv U-Net + Lightweight Transformer bottleneck
-4. RCAN-style residual channel-attention backbone with AE conditioning
+1. Spatial Gated Fusion U-Net — `--arch gated_unet` (local gated AE fusion at S1–S3)
+2. Windowed Cross-Attention Fusion U-Net — `--arch xattn_unet` (FiLM at S1; windowed DEM→AE cross-attention at S2–S3, 8×8 windows)
+3. Hybrid Conv U-Net + Lightweight Transformer bottleneck — `--arch hybrid_tf_unet` (FiLM S1–S3; two windowed self-attn + FFN blocks at S3 before decoder)
+4. RCAN-style residual channel-attention backbone with AE conditioning — `--arch rcan_ae_unet` (RCAB residual groups + AE channel-gated conditioning)
 5. Optional: Mixture-of-Experts residual head
 
 ## Screening Protocol (Short Runs)
@@ -87,9 +87,9 @@ Use one section per run.
 
 - [x] Add architecture selection flag to `train_dem.py` (e.g., `--arch`).
 - [x] Implement candidate #1 (Spatial Gated Fusion U-Net).
-- [ ] Implement candidate #2 (Windowed Cross-Attention U-Net).
-- [ ] Implement candidate #3 (Hybrid Conv+Transformer bottleneck).
-- [ ] Implement candidate #4 (RCAN-style backbone).
+- [x] Implement candidate #2 (Windowed Cross-Attention U-Net).
+- [x] Implement candidate #3 (Hybrid Conv+Transformer bottleneck).
+- [x] Implement candidate #4 (RCAN-style backbone).
 - [ ] Add consistent output naming for checkpoints by architecture.
 - [ ] Run 6-epoch screening for each candidate.
 - [ ] Record results and shortlist top 1-2 for longer runs.
@@ -124,6 +124,45 @@ python3 train_dem.py \
   --checkpoint-out dem_film_unet_arch_gated_6ep.pt
 ```
 
+### Train candidate #2 (Cross-attn)
+
+```bash
+python3 train_dem.py \
+  --arch xattn_unet \
+  --manifest train_manifest_seed42.txt \
+  --epochs 6 \
+  --batch-size 32 \
+  --workers 8 \
+  --amp \
+  --checkpoint-out dem_film_unet_arch_xattn_6ep.pt
+```
+
+### Train candidate #3 (Hybrid transformer bottleneck)
+
+```bash
+python3 train_dem.py \
+  --arch hybrid_tf_unet \
+  --manifest train_manifest_seed42.txt \
+  --epochs 6 \
+  --batch-size 32 \
+  --workers 8 \
+  --amp \
+  --checkpoint-out dem_film_unet_arch_hybrid_tf_6ep.pt
+```
+
+### Train candidate #4 (RCAN+AE)
+
+```bash
+python3 train_dem.py \
+  --arch rcan_ae_unet \
+  --manifest train_manifest_seed42.txt \
+  --epochs 6 \
+  --batch-size 32 \
+  --workers 8 \
+  --amp \
+  --checkpoint-out dem_film_unet_arch_rcan_ae_6ep.pt
+```
+
 ### Evaluate checkpoints
 
 ```bash
@@ -146,4 +185,40 @@ python3 eval_dem.py \
   --workers 3 \
   --amp \
   --output-json eval_arch_gated_epoch003.json
+```
+
+```bash
+python3 eval_dem.py \
+  --prediction-source model \
+  --arch xattn_unet \
+  --checkpoint dem_film_unet_arch_xattn_6ep_epoch_003.pt \
+  --manifest holdout_manifest_seed42.txt \
+  --batch-size 32 \
+  --workers 3 \
+  --amp \
+  --output-json eval_arch_xattn_epoch003.json
+```
+
+```bash
+python3 eval_dem.py \
+  --prediction-source model \
+  --arch hybrid_tf_unet \
+  --checkpoint dem_film_unet_arch_hybrid_tf_6ep_epoch_003.pt \
+  --manifest holdout_manifest_seed42.txt \
+  --batch-size 32 \
+  --workers 3 \
+  --amp \
+  --output-json eval_arch_hybrid_tf_epoch003.json
+```
+
+```bash
+python3 eval_dem.py \
+  --prediction-source model \
+  --arch rcan_ae_unet \
+  --checkpoint dem_film_unet_arch_rcan_ae_6ep_epoch_003.pt \
+  --manifest holdout_manifest_seed42.txt \
+  --batch-size 32 \
+  --workers 3 \
+  --amp \
+  --output-json eval_arch_rcan_ae_epoch003.json
 ```
