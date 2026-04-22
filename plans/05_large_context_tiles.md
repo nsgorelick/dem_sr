@@ -3,6 +3,13 @@
 ## Goal
 Train with substantially larger spatial context and compute loss on center crops to reduce border/context starvation.
 
+## Residual + Safeguard Requirements
+- Keep residual prediction form at tile scale: `z_hat = z_lr + r_tile`.
+- Maintain residual clamping and apply it before stitching/blending.
+- Keep weighted masking (`W`) and valid-mask handling for center-crop loss and overlap regions.
+- Keep finite-value sanitization and trust/uncertainty conditioning unchanged.
+- Keep baseline-comparable evaluation metrics on the same non-AU/AU manifests.
+
 ## Why This Is Different
 - Current training is 128x128 local chips.
 - This uses broader terrain context for disambiguation.

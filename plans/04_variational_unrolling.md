@@ -3,6 +3,13 @@
 ## Goal
 Unroll an optimization process with learnable proximal steps instead of direct black-box regression.
 
+## Residual + Safeguard Requirements
+- Unrolled state should optimize a **residual** correction from `z_lr`, not direct DEM state.
+- Final reconstruction remains `z_hat = z_lr + r`.
+- Constrain residual magnitude (explicit cap/projection per iteration or at output).
+- Keep weighted masking (`W`), finite-value sanitization, and uncertainty-aware weighting terms.
+- Keep evaluation parity with baseline metrics and non-AU/AU split discipline.
+
 ## Why This Is Different
 - Current approach is pure supervised mapping.
 - Unrolling combines data fidelity and explicit terrain priors in iterative updates.

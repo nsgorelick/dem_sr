@@ -5,6 +5,13 @@ Decompose error into:
 - low-frequency/global bias field correction,
 - high-frequency/local detail refinement.
 
+## Residual + Safeguard Requirements
+- Both stages predict residuals (Stage A coarse residual, Stage B detail residual), never absolute DEM.
+- Reconstruct via `z_mid = z_lr + r_coarse_up` and `z_hat = z_mid + r_detail`.
+- Apply residual caps to both residual heads.
+- Keep weighted masking (`W`), finite-value sanitization, and uncertainty/mask channels in both stages.
+- Preserve evaluation parity with baseline metrics and the non-AU train / AU val protocol.
+
 ## Why This Is Different
 - Current models learn one residual in a single forward pass.
 - This explicitly separates scale-dependent error modes.

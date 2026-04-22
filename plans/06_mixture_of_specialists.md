@@ -3,6 +3,13 @@
 ## Goal
 Use a routing model to send each sample (or pixel region) to specialized experts by terrain regime.
 
+## Residual + Safeguard Requirements
+- Every expert predicts a residual from `z_lr`; router combines residuals, not absolute DEMs.
+- Reconstruct globally as `z_hat = z_lr + r_mix`.
+- Apply residual clamping per-expert and/or after mixture aggregation.
+- Keep weighted masking (`W`), finite-value sanitization, and trust/uncertainty conditioning across experts.
+- Keep evaluation parity with baseline metrics and non-AU/AU split discipline.
+
 ## Why This Is Different
 - Current setup is one global model for all terrain conditions.
 - Specialists can focus on steep, hydrologic, urban, or flat regimes separately.

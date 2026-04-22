@@ -3,6 +3,13 @@
 ## Goal
 Test robust tabular/feature-based predictors as competitive baselines under distribution shift.
 
+## Residual + Safeguard Requirements
+- Predict correction residuals relative to `z_lr` (per-patch or per-pixel), not absolute DEM directly.
+- Reconstruct only with `z_hat = z_lr + r_pred`.
+- Apply residual range constraints (clip by terrain-plausible limits).
+- Keep masking/sanitization safeguards in feature extraction (valid pixels only, finite values only, uncertainty-aware features).
+- Evaluate with the same baseline metric suite and non-AU/AU split discipline.
+
 ## Why This Is Different
 - Current effort is deep convolution/attention models only.
 - Tree models can perform strongly with engineered geomorphology features and are easier to interpret.

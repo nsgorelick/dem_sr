@@ -2,6 +2,20 @@
 
 This document ranks the plans in this folder by expected upside, implementation effort, and time-to-signal under the current non-AU train / AU validation protocol.
 
+## Cross-Cutting Constraints (Apply to Every Plan)
+
+- Predict a **residual** and reconstruct with `z_hat = z_lr + r` (not direct absolute DEM prediction).
+- Preserve existing **residual safeguards**:
+  - residual clamping/capping (`r_cap` style bound),
+  - weighted loss mask `W` / valid-mask handling,
+  - finite-value sanitization and nodata exclusion,
+  - trust/uncertainty/mask channels retained as conditioning.
+- Preserve existing **evaluation safeguards**:
+  - compare against `z_lr` baseline on identical manifests,
+  - report elevation + slope + gradient + Laplacian + SDF metrics,
+  - enforce non-AU train / AU validation split discipline,
+  - require full AU re-check (`VAL_HARD_FRACTION=1.0`) before promotion.
+
 ## Quick Ranking (Effort vs Upside)
 
 | Rank | Approach | Effort | Expected Upside | Time to First Signal | Notes |

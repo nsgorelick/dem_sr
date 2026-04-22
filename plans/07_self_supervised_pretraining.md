@@ -3,6 +3,13 @@
 ## Goal
 Pretrain encoders on unlabeled DEM/AE data, then finetune on supervised DEM correction.
 
+## Residual + Safeguard Requirements
+- SSL changes representation learning only; downstream supervised head stays residual (`z_hat = z_lr + r`).
+- Preserve residual clamping/capping in finetuning heads.
+- Keep weighted masking (`W`), finite-value sanitization, and trust/uncertainty conditioning during finetune.
+- Keep full baseline-comparable geometry metrics and split protocol for downstream evaluation.
+- Treat SSL checkpoints as initialization, not a change to target definition.
+
 ## Why This Is Different
 - Current training is fully supervised from random initialization.
 - Pretraining can improve representations and cross-region transfer.

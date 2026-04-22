@@ -3,6 +3,13 @@
 ## Goal
 Predict terrain corrections in separate spatial-frequency bands (low/mid/high), then recombine.
 
+## Residual + Safeguard Requirements
+- Predict band-limited **residual** components around `z_lr`, not absolute elevation bands.
+- Reconstruct with `z_hat = z_lr + sum(r_band)`.
+- Keep global residual clamping after recombination (and optional per-band caps).
+- Keep weighted masking (`W`), finite-value sanitization, and trust/uncertainty conditioning.
+- Keep evaluation parity with baseline geometry metrics on identical manifests/splits.
+
 ## Why This Is Different
 - Current models learn in pixel space only.
 - This enforces explicit control over smooth trends vs sharp terrain edges.
