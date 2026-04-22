@@ -8,13 +8,10 @@ import torch
 
 from dem_film_unet import (
     ARCH_FILM,
-    DEFAULT_CONTOUR_INTERVAL_M,
     LOSS_PRESET_BASELINE,
-    loss_dem_preset,
 )
 from experiments.base import Experiment, LossBundle
-from losses.components import ElevationL1Loss, SlopeL1Loss
-from losses.composite import CompositeLoss
+from losses.composite import build_composite_loss_from_config
 from models.wrappers.factory import create_experiment_model
 
 
@@ -30,34 +27,13 @@ class BaselineFilmExperiment(Experiment):
         return {"z_hat": z_hat}
 
     def build_loss(self, cfg: dict[str, Any]):
-        if str(cfg.get("loss_system", "preset")).lower() == "composite":
-            return CompositeLoss(
-                [
-                    ElevationL1Loss(weight=float(cfg.get("lambda_elev", 1.0))),
-                    SlopeL1Loss(weight=float(cfg.get("lambda_slope", 0.5))),
-                ]
-            )
-
-        loss_cfg = {
-            "preset": cfg.get("loss_preset", LOSS_PRESET_BASELINE),
-            "lambda_slope": float(cfg.get("lambda_slope", 0.5)),
-            "lambda_grad": float(cfg.get("lambda_grad", 0.25)),
-            "lambda_curv": float(cfg.get("lambda_curv", 0.1)),
-            "lambda_ms": float(cfg.get("lambda_ms", 0.5)),
-            "lambda_sdf": float(cfg.get("lambda_sdf", 0.5)),
-            "lambda_contour": float(cfg.get("lambda_contour", 0.25)),
-            "contour_interval": float(cfg.get("contour_interval", DEFAULT_CONTOUR_INTERVAL_M)),
-        }
+        loss_cfg = dict(cfg)
+        loss_cfg.setdefault("loss_preset", LOSS_PRESET_BASELINE)
+        composite = build_composite_loss_from_config(loss_cfg)
 
         def _loss_fn(outputs: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> LossBundle:
-            loss, metrics_raw = loss_dem_preset(
-                outputs["z_hat"],
-                batch["z_gt"],
-                batch["w"],
-                **loss_cfg,
-            )
-            metrics = {name: float(value) for name, value in metrics_raw.items()}
-            return LossBundle(loss=loss, metrics=metrics)
+            bundle = composite(outputs, batch)
+            return LossBundle(loss=bundle.loss, metrics=bundle.metrics)
 
         return _loss_fn
 

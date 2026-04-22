@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from core.reporting import build_eval_payload, build_train_payload
 
@@ -12,11 +13,12 @@ class ReportingPayloadTests(unittest.TestCase):
             epochs=3,
             history={"train_loss": [1.0], "epoch_seconds": [2.0]},
             train_size=100,
-            config={"batch_size": 4},
+            config={"batch_size": 4, "manifest": Path("manifest.txt")},
         )
         self.assertEqual(payload["kind"], "train")
         self.assertEqual(payload["epochs"], 3)
         self.assertEqual(payload["train_size"], 100)
+        self.assertEqual(payload["config"]["manifest"], "manifest.txt")
 
     def test_build_eval_payload(self) -> None:
         payload = build_eval_payload(

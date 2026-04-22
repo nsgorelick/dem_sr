@@ -1,19 +1,19 @@
-# Plan: Contour-Aware Hard-Subset Sweep
+# Plan: Contour-Aware Loss Sweep (Config-Driven)
 
 ## 1) Goal
 
-Rapidly screen **contour-aware supervision** formulations from `contours.md` with a small, high-signal budget:
+Run contour-aware supervision experiments from `contours.md` using the new shared config workflow (`train_experiment.py` + `eval_experiment.py`) with outputs that are easy to identify later.
 
-- 4 loss presets (`baseline`, `geom`, `multitask`, `contour`)
-- 3 epochs each
-- hardest 10% non-AU train subset
-- hardest 10% AU validation subset
+This plan supports two modes:
+
+- **Screening mode**: hard subsets for fast ranking (`HARD_FRACTION=0.10`, `VAL_HARD_FRACTION=0.10` behavior).
+- **Confirmation mode**: full manifests (`HARD_FRACTION=1.0`, `VAL_HARD_FRACTION=1.0` behavior).
 
 Primary question:
 
 > Which contour-aware loss preset best improves terrain structure (slope/gradient/curvature/contour alignment) without harming elevation error?
 
-This is a **ranking experiment**, not a final absolute-metric benchmark.
+All runs should be driven by a run config file with a human-readable `description`.
 
 ---
 
@@ -50,8 +50,8 @@ Use:
   - `geom`: baseline + gradient + Laplacian + multi-scale elevation
   - `contour`: baseline + contour SDF
   - `multitask`: `geom` + contour SDF + soft contour indicator
-- `HARD_FRACTION=0.10`
-- `VAL_HARD_FRACTION=0.10`
+- train manifest = hardest 10% non-AU
+- val manifest = hardest 10% AU
 - `HARD_SCORE_FIELD=resid_scale` (alias-aware with `residAbs_p95`)
 
 The same hard-val manifest must be used for:
@@ -59,7 +59,7 @@ The same hard-val manifest must be used for:
 - `z_lr` baseline eval,
 - all four model preset evals.
 
-`CONTOUR_INTERVAL` must be identical between train and eval within a run.
+`contour_interval` must be identical between train and eval within a run.
 
 ---
 
@@ -80,29 +80,53 @@ The same hard-val manifest must be used for:
 
 ---
 
-## 5) Runner Workflow
+## 5) Config Workflow
 
-`run_loss_presets_non_au_vs_au.sh` now:
+Use config-driven entrypoints:
 
-1. Builds full manifests via `make_manifest.py` (train=non-AU, val=AU).
-2. Produces hard train subset (`HARD_FRACTION`).
-3. Produces hard val subset (`VAL_HARD_FRACTION`).
-4. Evaluates `z_lr` on selected val subset.
-5. Trains/evaluates each preset on the same selected subsets.
+1. Build full manifests via `make_manifest.py` (train=non-AU, val=AU).
+2. If screening mode, produce hard train/val subsets via `select_hard_patches.py`.
+3. Point config `shared.manifest` / `eval.manifest` to selected manifest files.
+4. Run:
+   - `python3 train_experiment.py --config <run_config.json>`
+   - `python3 eval_experiment.py --config <run_config.json>`
 
-Outputs are written under:
+Outputs:
 
-- `runs/<RUN_NAME>/manifests/`
-- `runs/<RUN_NAME>/checkpoints/`
-- `runs/<RUN_NAME>/eval/`
+- train artifacts use configured paths (checkpoint + train report JSON).
+- eval writes standardized results JSON in the config directory when `eval.output_json` is null.
+- optional per-patch / stratified JSONs should also be configured into the same config directory.
 
 ---
 
-## 6) Canonical Command
+## 6) Canonical Commands
 
 ```bash
-PATCH_TABLE=200k.geojson \
-  ./run_loss_presets_non_au_vs_au.sh
+# 1) Build non-AU train and AU val manifests
+python3 make_manifest.py \
+  --data-root /data/training \
+  --patch-table 200k.geojson \
+  --locked-country AU \
+  --val-fraction 0 \
+  --holdout-out <val_manifest.txt> \
+  --train-out <train_manifest.txt> \
+  --summary-json <summary.json>
+```
+
+```bash
+# 2a) Screening mode: select hard subsets (optional)
+python3 select_hard_patches.py --manifest <train_manifest.txt> --patch-table 200k.geojson --fraction 0.10 --score-field resid_scale --out <train_hard.txt>
+python3 select_hard_patches.py --manifest <val_manifest.txt> --patch-table 200k.geojson --fraction 0.10 --score-field resid_scale --out <val_hard.txt>
+```
+
+```bash
+# 2b) Confirmation mode: use full manifests directly (equivalent to HARD_FRACTION=1.0, VAL_HARD_FRACTION=1.0)
+```
+
+```bash
+# 3) Run train/eval from shared config
+python3 train_experiment.py --config <run_config.json>
+python3 eval_experiment.py --config <run_config.json>
 ```
 
 Optional knobs:
@@ -144,10 +168,8 @@ Notes:
 
 Promote only the winning preset(s) to full validation:
 
-1. Re-run with:
-   - `VAL_HARD_FRACTION=1.0`
-2. Preferably also:
-   - `HARD_FRACTION=1.0` and longer training (`EPOCHS>=6`) for confirmation.
+1. Re-run with full AU val manifest.
+2. Preferably also re-run with full non-AU train manifest and longer training (`epochs>=6`).
 
 A preset is accepted only if full-AU validation confirms:
 
@@ -194,7 +216,7 @@ Mitigation:
 
 ## 12) Summary
 
-This plan formalizes a fast contour-focused screening loop:
+This plan formalizes a config-first contour-focused workflow:
 
-> Stress-test contour-aware losses on hard patches, rank by structure + contour fidelity, then validate the winner on full AU.
+> Stress-test contour-aware losses on hard patches, rank by structure + contour fidelity, then validate the winner on full AU using standardized config-scoped outputs.
 

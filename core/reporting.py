@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def build_train_payload(
@@ -22,8 +33,8 @@ def build_train_payload(
         "data_root": data_root,
         "epochs": int(epochs),
         "train_size": int(train_size),
-        "history": history,
-        "config": config,
+        "history": _json_safe(history),
+        "config": _json_safe(config),
     }
 
 
@@ -48,7 +59,7 @@ def build_eval_payload(
         "manifest": manifest,
         "list_from_root": list_from_root,
         "contour_interval_m": contour_interval_m,
-        "metrics_by_source": metrics_by_source,
-        "config": config,
+        "metrics_by_source": _json_safe(metrics_by_source),
+        "config": _json_safe(config),
     }
 

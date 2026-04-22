@@ -1,7 +1,25 @@
 """Composable loss system for experiment entrypoints."""
 
-from .components import ElevationL1Loss, SlopeL1Loss
-from .composite import CompositeLoss
+from .components import (
+    ContourIndicatorL1Loss,
+    ContourSDFL1Loss,
+    CurvatureL1Loss,
+    ElevationSmoothL1Loss,
+    GradientL1Loss,
+    MultiScaleElevationSmoothL1Loss,
+    SlopeL1Loss,
+)
+from .composite import CompositeLoss, build_composite_loss_from_config
 
-__all__ = ["CompositeLoss", "ElevationL1Loss", "SlopeL1Loss"]
+__all__ = [
+    "CompositeLoss",
+    "build_composite_loss_from_config",
+    "ElevationSmoothL1Loss",
+    "SlopeL1Loss",
+    "GradientL1Loss",
+    "CurvatureL1Loss",
+    "MultiScaleElevationSmoothL1Loss",
+    "ContourSDFL1Loss",
+    "ContourIndicatorL1Loss",
+]
 

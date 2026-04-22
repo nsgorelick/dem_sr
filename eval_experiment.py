@@ -21,6 +21,12 @@ from core.config import (
 )
 from core.metrics import set_contour_interval
 from core.reporting import build_eval_payload
+from core.run_config import (
+    load_run_config,
+    resolve_description,
+    section_defaults,
+    standardized_eval_output_path,
+)
 from eval.engine import run_eval_epoch_multi_source, run_eval_epoch_multi_source_with_rows
 from experiments.config_presets import get_preset, list_presets
 from experiments.registry import create_experiment, list_experiments
@@ -48,6 +54,12 @@ PATCH_TABLE_FIELDS = (
 )
 
 
+def _as_path(value: str | Path | None) -> Path | None:
+    if value is None or isinstance(value, Path):
+        return value
+    return Path(value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     experiments = list_experiments()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -57,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=experiments,
         help="Experiment key.",
     )
+    parser.add_argument("--config", type=Path, default=None, help="Shared JSON run config file")
+    parser.add_argument("--description", default=None, help="Human-readable run description")
     parser.add_argument(
         "--delegate-legacy",
         action="store_true",
@@ -119,8 +133,24 @@ def main() -> None:
     from patch_table import load_patch_table
     from core.metrics import STRATA_FIELDS, build_patch_table_context, compute_stratified_metrics
 
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre_parser.parse_known_args()
+    run_config: dict[str, object] = {}
+    if pre_args.config is not None:
+        run_config = load_run_config(pre_args.config)
+
     parser = build_parser()
+    if run_config:
+        parser.set_defaults(**section_defaults(run_config, "eval"))
     args, passthrough = parser.parse_known_args()
+    args.config = _as_path(args.config)
+    args.manifest = _as_path(args.manifest)
+    args.checkpoint = _as_path(args.checkpoint)
+    args.output_json = _as_path(args.output_json)
+    args.per_patch_json = _as_path(args.per_patch_json)
+    args.patch_table = _as_path(args.patch_table)
+    args.stratified_json = _as_path(args.stratified_json)
     apply_namespace_preset_defaults(args, parser, get_preset("eval", args.preset))
     experiment = create_experiment(args.experiment)
     if args.delegate_legacy:
@@ -260,9 +290,21 @@ def main() -> None:
     payload["patch_table_match_summary"] = patch_table_match_summary
     payload["stratification"] = stratification_payload
     payload["stratified_metrics_by_source"] = stratified_metrics_by_source
-    if args.output_json is not None:
-        args.output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        log.info("Wrote %s", args.output_json)
+    resolved_description = resolve_description(
+        run_config if run_config else {},
+        args.config if args.config is not None else Path("eval_experiment"),
+        args.description,
+    )
+    payload["description"] = resolved_description
+    output_json = args.output_json
+    if output_json is None:
+        output_json = standardized_eval_output_path(
+            config_path=args.config,
+            description=resolved_description,
+        )
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    log.info("Wrote %s", output_json)
     if args.per_patch_json is not None:
         args.per_patch_json.write_text(json.dumps(per_patch_rows, indent=2), encoding="utf-8")
         log.info("Wrote %s", args.per_patch_json)

@@ -22,6 +22,7 @@ from core.config import (
     resolve_config,
 )
 from core.reporting import build_train_payload
+from core.run_config import load_run_config, resolve_description, section_defaults
 from experiments.config_presets import get_preset, list_presets
 from experiments.registry import create_experiment, list_experiments
 
@@ -31,6 +32,12 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("train_experiment")
+
+
+def _as_path(value: str | Path | None) -> Path | None:
+    if value is None or isinstance(value, Path):
+        return value
+    return Path(value)
 
 
 def _apply_rotflip_augmentation(sample: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -116,6 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=experiments,
         help="Experiment key.",
     )
+    parser.add_argument("--config", type=Path, default=None, help="Shared JSON run config file")
+    parser.add_argument("--description", default=None, help="Human-readable run description")
     parser.add_argument(
         "--delegate-legacy",
         action="store_true",
@@ -166,8 +175,22 @@ def main() -> None:
     )
     from train.engine import run_epoch
 
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre_parser.parse_known_args()
+    run_config: dict[str, object] = {}
+    if pre_args.config is not None:
+        run_config = load_run_config(pre_args.config)
+
     parser = build_parser()
+    if run_config:
+        parser.set_defaults(**section_defaults(run_config, "train"))
     args, passthrough = parser.parse_known_args()
+    args.config = _as_path(args.config)
+    args.manifest = _as_path(args.manifest)
+    args.checkpoint_out = _as_path(args.checkpoint_out)
+    args.output_json = _as_path(args.output_json)
+    args.resume = _as_path(args.resume)
     apply_namespace_preset_defaults(args, parser, get_preset("train", args.preset))
     cfg = resolve_config(args)
     experiment = create_experiment(args.experiment)
@@ -181,6 +204,11 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
+    resolved_description = resolve_description(
+        run_config if run_config else {},
+        args.config if args.config is not None else Path("train_experiment"),
+        args.description,
+    )
 
     if cfg.manifest is not None:
         stems = load_patch_stems_manifest(cfg.manifest)
@@ -276,7 +304,7 @@ def main() -> None:
         epochs=args.epochs,
         history=history,
         train_size=len(train_subset),
-        config=model_cfg,
+        config=model_cfg | {"description": resolved_description},
     )
     if args.output_json is not None:
         args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
