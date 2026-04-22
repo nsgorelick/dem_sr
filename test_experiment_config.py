@@ -32,6 +32,10 @@ class ExperimentConfigTests(unittest.TestCase):
                 "4",
                 "--amp",
                 "--precomputed-weight",
+                "--tile-size",
+                "512",
+                "--supervision-crop-size",
+                "384",
                 "--contour-interval",
                 "20",
                 "--arch",
@@ -46,6 +50,8 @@ class ExperimentConfigTests(unittest.TestCase):
         self.assertEqual(cfg.batch_size, 12)
         self.assertTrue(cfg.amp)
         self.assertTrue(cfg.precomputed_weight)
+        self.assertEqual(cfg.tile_size, 512)
+        self.assertEqual(cfg.supervision_crop_size, 384)
         self.assertEqual(cfg.contour_interval, 20.0)
 
     def test_resolve_config_falls_back_to_default_root(self) -> None:

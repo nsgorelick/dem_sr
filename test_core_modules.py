@@ -161,10 +161,13 @@ class CoreModulesTests(unittest.TestCase):
     def test_experiment_registry_baseline(self) -> None:
         self.assertIn("baseline", list_experiments())
         self.assertIn("hydrology", list_experiments())
+        self.assertIn("two_stage", list_experiments())
         exp = create_experiment("baseline")
         self.assertEqual(exp.name, "baseline")
         hydrology = create_experiment("hydrology")
         self.assertEqual(hydrology.name, "hydrology")
+        two_stage = create_experiment("two_stage")
+        self.assertEqual(two_stage.name, "two_stage")
 
     def test_build_patch_table_context(self) -> None:
         patch_table = {

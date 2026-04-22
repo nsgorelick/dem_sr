@@ -93,6 +93,31 @@ def sanitize_float32(x: np.ndarray) -> np.ndarray:
     return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
 
+def _center_crop(arr: np.ndarray, size: int) -> np.ndarray:
+    """Center-crop CHW/CxHxW-like arrays to a square ``size``."""
+    if arr.ndim < 2:
+        raise ValueError(f"expected at least 2 dims for crop, got shape={arr.shape}")
+    h = int(arr.shape[-2])
+    w = int(arr.shape[-1])
+    if size > h or size > w:
+        raise ValueError(f"center crop size={size} exceeds array shape=({h}, {w})")
+    y0 = (h - size) // 2
+    x0 = (w - size) // 2
+    return arr[..., y0 : y0 + size, x0 : x0 + size]
+
+
+def _center_supervision_mask(shape_hw: tuple[int, int], crop_size: int) -> np.ndarray:
+    """Binary center mask used for supervision weighting."""
+    h, w = shape_hw
+    if crop_size > h or crop_size > w:
+        raise ValueError(f"supervision crop size={crop_size} exceeds tile shape=({h}, {w})")
+    y0 = (h - crop_size) // 2
+    x0 = (w - crop_size) // 2
+    mask = np.zeros((1, h, w), dtype=np.float32)
+    mask[:, y0 : y0 + crop_size, x0 : x0 + crop_size] = 1.0
+    return mask
+
+
 class LocalDemPatchDataset(Dataset):
     """Random-access reads of stack + AE GeoTIFFs from local disk."""
 
@@ -108,6 +133,8 @@ class LocalDemPatchDataset(Dataset):
         candidate_band: int = 1,
         transform: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None,
         max_patches: int | None = None,
+        tile_size: int | None = None,
+        supervision_crop_size: int | None = None,
     ) -> None:
         """
         Args:
@@ -120,6 +147,8 @@ class LocalDemPatchDataset(Dataset):
             candidate_band: 1-based band to read from the comparison raster.
             transform: Optional callable mutating the sample dict (e.g. augmentation).
             max_patches: Keep only the first *N* stems after listing (debug / smoke runs).
+            tile_size: Optional center crop size for large-tile dataset mode.
+            supervision_crop_size: Optional center crop size for supervision mask (applied to ``w``).
         """
         self.training_root = training_root.rstrip("/")
         self.use_precomputed_weight = use_precomputed_weight
@@ -128,6 +157,14 @@ class LocalDemPatchDataset(Dataset):
         self.candidate_product = candidate_product
         self.candidate_band = int(candidate_band)
         self.transform = transform
+        self.tile_size = int(tile_size) if tile_size is not None else None
+        self.supervision_crop_size = (
+            int(supervision_crop_size) if supervision_crop_size is not None else None
+        )
+        if self.tile_size is not None and self.tile_size <= 0:
+            raise ValueError("tile_size must be positive")
+        if self.supervision_crop_size is not None and self.supervision_crop_size <= 0:
+            raise ValueError("supervision_crop_size must be positive")
 
         if patch_stems is None:
             self._stems = list_patch_stems(self.training_root)
@@ -208,6 +245,13 @@ class LocalDemPatchDataset(Dataset):
             )[np.newaxis, ...]
 
         x_dem = np.concatenate([z_lr, u_enc, m_bld, m_wp, m_ws], axis=0).astype(np.float32)
+        if self.tile_size is not None:
+            z_gt = _center_crop(z_gt, self.tile_size)
+            z_lr = _center_crop(z_lr, self.tile_size)
+            W = _center_crop(W, self.tile_size)
+            x_dem = _center_crop(x_dem, self.tile_size)
+            if ae_u8 is not None:
+                ae_u8 = _center_crop(ae_u8, self.tile_size)
         candidate = None
         candidate_valid = None
         candidate_path = self._candidate_path_for_stem(stem)
@@ -226,6 +270,8 @@ class LocalDemPatchDataset(Dataset):
                 raise ValueError(
                     f"{candidate_path}: shape {candidate.shape[-2:]} does not match patch shape {z_gt.shape[-2:]}"
                 )
+        if self.supervision_crop_size is not None:
+            W *= _center_supervision_mask((int(W.shape[-2]), int(W.shape[-1])), self.supervision_crop_size)
 
         sample = {
             "stem": stem,

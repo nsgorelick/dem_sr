@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import argparse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,6 +29,9 @@ from export_progress import ExportProgressLine
 PATCH_EXPORT_DIR = Path(".")
 STACK_EXPORT_DIR = PATCH_EXPORT_DIR / "stack"
 AE_EXPORT_DIR = PATCH_EXPORT_DIR / "ae"
+PATCH_SIZE_PIXELS = 128
+PATCH_SCALE_M = 10
+PATCH_COARSE_M = PATCH_SIZE_PIXELS * PATCH_SCALE_M
 
 EE_INIT_KWARGS: dict[str, str] = {
     "opt_url": "https://earthengine-highvolume.googleapis.com",
@@ -62,6 +66,21 @@ ee.Initialize(**EE_INIT_KWARGS)
 def patch_id_from_properties(props: dict[str, Any]) -> str:
     """Filename stem shared by stack + AE outputs."""
     return f"{int(props['x'])}_{int(props['y'])}_{props['zone']}_{props['country']}_{props['year']}"
+
+
+def configure_export_layout(*, export_dir: Path | str, patch_size_pixels: int) -> None:
+    """Configure output directories and patch geometry for this process."""
+    global PATCH_EXPORT_DIR, STACK_EXPORT_DIR, AE_EXPORT_DIR
+    global PATCH_SIZE_PIXELS, PATCH_COARSE_M
+
+    patch_size_pixels = int(patch_size_pixels)
+    if patch_size_pixels <= 0:
+        raise ValueError(f"patch_size_pixels must be positive, got {patch_size_pixels}")
+    PATCH_EXPORT_DIR = Path(export_dir)
+    STACK_EXPORT_DIR = PATCH_EXPORT_DIR / "stack"
+    AE_EXPORT_DIR = PATCH_EXPORT_DIR / "ae"
+    PATCH_SIZE_PIXELS = patch_size_pixels
+    PATCH_COARSE_M = PATCH_SIZE_PIXELS * PATCH_SCALE_M
 
 
 def completed_patch_ids_on_disk() -> set[str]:
@@ -453,7 +472,7 @@ def makeStack(country, year, zone):
     return stack, band_ids
 
 
-def grid_128x128_snap10m(x, y, scale_m=10, size=128, coarse_m=1280):
+def grid_snap10m(x, y, scale_m=10, size=128, coarse_m=1280):
     """Pixel grid for Earth Engine getPixels: *size*×*size* at ``scale_m`` in UTM meters.
 
     ``x`` and ``y`` are the patch coordinates on the UTM grid with spacing ``coarse_m``
@@ -584,7 +603,7 @@ def export_one_patch(item: dict) -> dict:
     ee_path = props.get("path", "")
 
     try:
-        grid = grid_128x128_snap10m(px, py)
+        grid = grid_snap10m(px, py, scale_m=PATCH_SCALE_M, size=PATCH_SIZE_PIXELS, coarse_m=PATCH_COARSE_M)
         grid["crsCode"] = _utm_crs_code(zone)
         stack, band_ids = makeStack(country, year, zone)
         payload = {
@@ -593,7 +612,7 @@ def export_one_patch(item: dict) -> dict:
             "bandIds": list(band_ids),
             "grid": grid,
         }
-        aef_image = makeAnnualSatelliteEmbeddingByte(year, zone, px, py)
+        aef_image = makeAnnualSatelliteEmbeddingByte(year, zone, px, py, coarse_m=PATCH_COARSE_M)
         aef_payload = {
             "expression": aef_image,
             "fileFormat": "GEO_TIFF",
@@ -676,7 +695,17 @@ def run_export(pool_workers: int | None = None) -> None:
     print("done.", flush=True)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--export-dir", type=Path, default=Path("."), help="Parent output directory (contains stack/ and ae/)")
+    parser.add_argument("--patch-size", type=int, default=128, help="Patch size in pixels at 10m resolution")
+    parser.add_argument("--pool-workers", type=int, default=None, help="Initial worker pool size")
+    return parser
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.ERROR)
     logging.getLogger("rasterio._env").setLevel(logging.ERROR)
-    run_export()
+    args = build_parser().parse_args()
+    configure_export_layout(export_dir=args.export_dir, patch_size_pixels=args.patch_size)
+    run_export(pool_workers=args.pool_workers)

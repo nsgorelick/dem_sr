@@ -5,10 +5,12 @@ from __future__ import annotations
 from experiments.base import Experiment
 from experiments.baseline_film import BaselineFilmExperiment
 from experiments.hydrology import HydrologyExperiment
+from experiments.two_stage import TwoStageResidualExperiment
 
 _EXPERIMENTS: dict[str, type[Experiment]] = {
     "baseline": BaselineFilmExperiment,
     "hydrology": HydrologyExperiment,
+    "two_stage": TwoStageResidualExperiment,
 }
 
 

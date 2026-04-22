@@ -10,6 +10,7 @@ import sys
 import time
 import json
 from pathlib import Path
+from collections.abc import Iterable
 
 import torch
 from torch.utils.data import DataLoader
@@ -158,6 +159,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-contour", type=float, default=0.25)
     parser.add_argument("--guidance-dropout", type=float, default=0.3)
     parser.add_argument(
+        "--two-stage-train-stage",
+        choices=("stage_a", "stage_b"),
+        default="stage_a",
+        help="Training stage selector for two_stage experiment.",
+    )
+    parser.add_argument(
+        "--two-stage-a-checkpoint",
+        type=Path,
+        default=None,
+        help="Stage A checkpoint used to initialize/freeze Stage A for stage_b training.",
+    )
+    parser.add_argument(
+        "--two-stage-coarse-pool-kernel",
+        type=int,
+        default=4,
+        help="Average-pooling kernel used to constrain Stage A to coarse structure.",
+    )
+    parser.add_argument(
         "--augment-rotflip",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -191,6 +210,7 @@ def main() -> None:
     args.checkpoint_out = _as_path(args.checkpoint_out)
     args.output_json = _as_path(args.output_json)
     args.resume = _as_path(args.resume)
+    args.two_stage_a_checkpoint = _as_path(args.two_stage_a_checkpoint)
     apply_namespace_preset_defaults(args, parser, get_preset("train", args.preset))
     cfg = resolve_config(args)
     experiment = create_experiment(args.experiment)
@@ -227,6 +247,8 @@ def main() -> None:
         use_precomputed_weight=cfg.precomputed_weight,
         load_ae=True,
         transform=_apply_rotflip_augmentation if args.augment_rotflip else None,
+        tile_size=cfg.tile_size,
+        supervision_crop_size=cfg.supervision_crop_size,
     )
     loader = DataLoader(
         train_subset,
@@ -242,7 +264,12 @@ def main() -> None:
     model_cfg = vars(args) | config_to_dict(cfg)
     model = experiment.build_model(model_cfg).to(device)
     loss_fn = experiment.build_loss(model_cfg)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    trainable_params: Iterable[torch.nn.Parameter]
+    if hasattr(model, "trainable_parameters"):
+        trainable_params = list(model.trainable_parameters())
+    else:
+        trainable_params = list(model.parameters())
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     history: dict[str, list[float]] = {"train_loss": [], "epoch_seconds": []}

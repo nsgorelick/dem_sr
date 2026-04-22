@@ -21,6 +21,21 @@ class EntrypointParsingTests(unittest.TestCase):
         self.assertEqual(args.loss_system, "composite")
         self.assertEqual(args.lambda_elev, 1.0)
 
+    def test_train_parser_accepts_two_stage_args(self) -> None:
+        parser = train_experiment.build_parser()
+        args = parser.parse_args(
+            [
+                "--experiment",
+                "two_stage",
+                "--two-stage-train-stage",
+                "stage_b",
+                "--two-stage-a-checkpoint",
+                "stage_a.pt",
+            ]
+        )
+        self.assertEqual(args.two_stage_train_stage, "stage_b")
+        self.assertEqual(str(args.two_stage_a_checkpoint), "stage_a.pt")
+
     def test_train_parser_cli_override_beats_preset(self) -> None:
         parser = train_experiment.build_parser()
         args = parser.parse_args(
@@ -43,8 +58,22 @@ class EntrypointParsingTests(unittest.TestCase):
 
     def test_eval_parser_accepts_prediction_sources(self) -> None:
         parser = eval_experiment.build_parser()
-        args = parser.parse_args(["--prediction-source", "model", "z_lr", "--list-from-root"])
-        self.assertEqual(args.prediction_source, ["model", "z_lr"])
+        args = parser.parse_args(["--prediction-source", "model", "stage_a", "z_lr", "--list-from-root"])
+        self.assertEqual(args.prediction_source, ["model", "stage_a", "z_lr"])
+
+    def test_eval_parser_accepts_sliding_window_args(self) -> None:
+        parser = eval_experiment.build_parser()
+        args = parser.parse_args(
+            [
+                "--list-from-root",
+                "--sliding-window-tile-size",
+                "512",
+                "--sliding-window-overlap",
+                "64",
+            ]
+        )
+        self.assertEqual(args.sliding_window_tile_size, 512)
+        self.assertEqual(args.sliding_window_overlap, 64)
 
 
 if __name__ == "__main__":

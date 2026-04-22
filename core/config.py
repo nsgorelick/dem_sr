@@ -21,6 +21,8 @@ class ExperimentConfig:
     workers: int = 2
     amp: bool = False
     precomputed_weight: bool = False
+    tile_size: int | None = None
+    supervision_crop_size: int | None = None
     contour_interval: float = 10.0
     arch: str = "film_unet"
     loss_preset: str = "baseline"
@@ -37,6 +39,18 @@ def add_shared_experiment_args(parser: ArgumentParser) -> None:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--amp", action="store_true", help="torch.cuda.amp")
     parser.add_argument("--precomputed-weight", action="store_true", help="Use stack weight band")
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=None,
+        help="Optional dataset center-crop size (enables large-tile dataset mode).",
+    )
+    parser.add_argument(
+        "--supervision-crop-size",
+        type=int,
+        default=None,
+        help="Optional center supervision crop size (applied to weight mask).",
+    )
     parser.add_argument(
         "--contour-interval",
         type=float,
@@ -60,6 +74,8 @@ def resolve_config(args: Namespace, *, default_data_root: str | None = None) -> 
         workers=int(getattr(args, "workers", 2)),
         amp=bool(getattr(args, "amp", False)),
         precomputed_weight=bool(getattr(args, "precomputed_weight", False)),
+        tile_size=getattr(args, "tile_size", None),
+        supervision_crop_size=getattr(args, "supervision_crop_size", None),
         contour_interval=float(getattr(args, "contour_interval", 10.0)),
         arch=str(getattr(args, "arch", "film_unet")),
         loss_preset=str(getattr(args, "loss_preset", "baseline")),
@@ -77,6 +93,8 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
         "workers": config.workers,
         "amp": config.amp,
         "precomputed_weight": config.precomputed_weight,
+        "tile_size": config.tile_size,
+        "supervision_crop_size": config.supervision_crop_size,
         "contour_interval": config.contour_interval,
         "arch": config.arch,
         "loss_preset": config.loss_preset,

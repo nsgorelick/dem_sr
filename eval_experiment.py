@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, default=Path("experiment_model.pt"))
     parser.add_argument(
         "--prediction-source",
-        choices=("model", "z_lr"),
+        choices=("model", "z_lr", "stage_a"),
         nargs="+",
         default=["model"],
         help="One or more prediction sources to evaluate in a single pass.",
@@ -120,6 +120,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON file for stratified summaries derived from --patch-table",
     )
+    parser.add_argument(
+        "--sliding-window-tile-size",
+        type=int,
+        default=None,
+        help="Optional model inference tile size for overlap/blend stitching.",
+    )
+    parser.add_argument(
+        "--sliding-window-overlap",
+        type=int,
+        default=0,
+        help="Pixel overlap between inference windows when sliding-window inference is enabled.",
+    )
+    parser.add_argument(
+        "--two-stage-a-checkpoint",
+        type=Path,
+        default=None,
+        help="Stage A checkpoint for two_stage experiment when evaluating model output.",
+    )
+    parser.add_argument(
+        "--two-stage-train-stage",
+        choices=("stage_a", "stage_b"),
+        default="stage_b",
+        help="Execution stage for two_stage experiment at evaluation time.",
+    )
+    parser.add_argument(
+        "--two-stage-coarse-pool-kernel",
+        type=int,
+        default=4,
+        help="Average-pooling kernel used to constrain Stage A coarse residual.",
+    )
     return parser
 
 
@@ -151,6 +181,7 @@ def main() -> None:
     args.per_patch_json = _as_path(args.per_patch_json)
     args.patch_table = _as_path(args.patch_table)
     args.stratified_json = _as_path(args.stratified_json)
+    args.two_stage_a_checkpoint = _as_path(args.two_stage_a_checkpoint)
     apply_namespace_preset_defaults(args, parser, get_preset("eval", args.preset))
     experiment = create_experiment(args.experiment)
     if args.delegate_legacy:
@@ -162,10 +193,18 @@ def main() -> None:
         return
 
     prediction_sources = list(dict.fromkeys(args.prediction_source))
+    if args.sliding_window_tile_size is not None:
+        if args.sliding_window_tile_size <= 0:
+            raise SystemExit("--sliding-window-tile-size must be positive")
+        if args.sliding_window_overlap < 0:
+            raise SystemExit("--sliding-window-overlap must be >= 0")
+        if args.sliding_window_overlap >= args.sliding_window_tile_size:
+            raise SystemExit("--sliding-window-overlap must be smaller than --sliding-window-tile-size")
     checkpoint = None
     model_state = None
     checkpoint_args: dict[str, object] = {}
-    if "model" in prediction_sources:
+    requires_model = "model" in prediction_sources or "stage_a" in prediction_sources
+    if requires_model:
         checkpoint = load_checkpoint(args.checkpoint)
         model_state = extract_model_state(checkpoint)
         checkpoint_args = checkpoint.get("args", {}) if isinstance(checkpoint, dict) else {}
@@ -193,6 +232,8 @@ def main() -> None:
         use_precomputed_weight=cfg.precomputed_weight,
         load_ae=True,
         max_patches=cfg.max_patches,
+        tile_size=cfg.tile_size,
+        supervision_crop_size=None,
     )
     if len(ds) == 0:
         raise SystemExit("No patches to evaluate.")
@@ -211,7 +252,7 @@ def main() -> None:
     set_contour_interval(cfg.contour_interval)
 
     model = None
-    if "model" in prediction_sources:
+    if requires_model:
         model_cfg = dict(checkpoint_args)
         model_cfg.update(vars(args) | config_to_dict(cfg))
         model = experiment.build_model(model_cfg).to(device)
@@ -228,6 +269,8 @@ def main() -> None:
             model_forward=experiment.model_forward,
             amp_enabled=amp_enabled,
             prediction_sources=prediction_sources,
+            sliding_window_tile_size=args.sliding_window_tile_size,
+            sliding_window_overlap=args.sliding_window_overlap,
         )
     else:
         metrics_by_source = run_eval_epoch_multi_source(
@@ -237,6 +280,8 @@ def main() -> None:
             model_forward=experiment.model_forward,
             amp_enabled=amp_enabled,
             prediction_sources=prediction_sources,
+            sliding_window_tile_size=args.sliding_window_tile_size,
+            sliding_window_overlap=args.sliding_window_overlap,
         )
     for source in prediction_sources:
         metrics = metrics_by_source[source]
@@ -278,7 +323,7 @@ def main() -> None:
     payload = build_eval_payload(
         experiment=args.experiment,
         prediction_sources=prediction_sources,
-        checkpoint=str(args.checkpoint) if "model" in prediction_sources else None,
+        checkpoint=str(args.checkpoint) if requires_model else None,
         data_root=str(data_root),
         manifest=str(cfg.manifest) if cfg.manifest else None,
         list_from_root=bool(cfg.list_from_root),

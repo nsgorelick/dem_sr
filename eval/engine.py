@@ -17,7 +17,7 @@ from core.metrics import (
     parse_patch_stem,
     update_metric_sums,
 )
-from eval.predictors import predict_model, predict_z_lr
+from eval.predictors import predict_model, predict_stage_a, predict_z_lr
 
 
 @torch.no_grad()
@@ -64,6 +64,8 @@ def run_eval_epoch_multi_source(
     model_forward: Callable[[torch.nn.Module, dict[str, Any]], dict[str, torch.Tensor]],
     amp_enabled: bool,
     prediction_sources: list[str],
+    sliding_window_tile_size: int | None = None,
+    sliding_window_overlap: int = 0,
 ) -> dict[str, dict[str, float]]:
     """Run one evaluation pass for one or more prediction sources."""
     sources = list(dict.fromkeys(prediction_sources))
@@ -86,10 +88,20 @@ def run_eval_epoch_multi_source(
             for source in sources:
                 if source == "model":
                     assert model is not None
-                    pred = predict_model(model, batch_tensors, model_forward)
+                    pred = predict_model(
+                        model,
+                        batch_tensors,
+                        model_forward,
+                        sliding_window_tile_size=sliding_window_tile_size,
+                        sliding_window_overlap=sliding_window_overlap,
+                        amp_enabled=amp_enabled,
+                    )
                     pred = validate_model_outputs({"z_hat": pred})
                 elif source == "z_lr":
                     pred = predict_z_lr(batch_tensors)
+                elif source == "stage_a":
+                    assert model is not None
+                    pred = predict_stage_a(model, batch_tensors, model_forward)
                 else:
                     raise ValueError(f"unsupported prediction source: {source}")
                 if pred.shape != batch_tensors["z_gt"].shape:
@@ -111,6 +123,8 @@ def run_eval_epoch_multi_source_with_rows(
     model_forward: Callable[[torch.nn.Module, dict[str, Any]], dict[str, torch.Tensor]],
     amp_enabled: bool,
     prediction_sources: list[str],
+    sliding_window_tile_size: int | None = None,
+    sliding_window_overlap: int = 0,
 ) -> tuple[dict[str, dict[str, float]], list[dict[str, object]]]:
     """Run multi-source eval and collect per-patch rows."""
     sources = list(dict.fromkeys(prediction_sources))
@@ -137,10 +151,20 @@ def run_eval_epoch_multi_source_with_rows(
             for source in sources:
                 if source == "model":
                     assert model is not None
-                    pred = predict_model(model, batch_tensors, model_forward)
+                    pred = predict_model(
+                        model,
+                        batch_tensors,
+                        model_forward,
+                        sliding_window_tile_size=sliding_window_tile_size,
+                        sliding_window_overlap=sliding_window_overlap,
+                        amp_enabled=amp_enabled,
+                    )
                     pred = validate_model_outputs({"z_hat": pred})
                 elif source == "z_lr":
                     pred = predict_z_lr(batch_tensors)
+                elif source == "stage_a":
+                    assert model is not None
+                    pred = predict_stage_a(model, batch_tensors, model_forward)
                 else:
                     raise ValueError(f"unsupported prediction source: {source}")
                 if pred.shape != batch_tensors["z_gt"].shape:
