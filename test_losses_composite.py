@@ -7,7 +7,7 @@ from dem_film_unet import (
     LOSS_PRESET_CHOICES,
     loss_dem_preset,
 )
-from losses.components import ElevationSmoothL1Loss, SlopeL1Loss
+from losses.components import ElevationSmoothL1Loss, FlowDirectionProxyLoss, PitSpikePenaltyLoss, SlopeL1Loss
 from losses.composite import CompositeLoss, build_composite_loss_from_config
 
 
@@ -71,6 +71,42 @@ class CompositeLossTests(unittest.TestCase):
         z = torch.zeros((1, 1, 8, 8))
         bundle = composite({"z_hat": z}, {"z_gt": z, "w": torch.ones_like(z)})
         self.assertNotIn("slope", bundle.metrics)
+
+    def test_hydrology_flow_component_zero_when_equal(self) -> None:
+        comp = FlowDirectionProxyLoss()
+        z = torch.randn((1, 1, 8, 8), dtype=torch.float32)
+        w = torch.ones_like(z)
+        value = comp(z, z, w, {"x_dem": torch.zeros((1, 5, 8, 8), dtype=torch.float32)})
+        self.assertAlmostEqual(float(value), 0.0, places=6)
+
+    def test_hydrology_pit_spike_component_penalizes_excess_extrema(self) -> None:
+        comp = PitSpikePenaltyLoss(kernel_size=3)
+        z_gt = torch.zeros((1, 1, 8, 8), dtype=torch.float32)
+        z_hat = z_gt.clone()
+        z_hat[:, :, 4, 4] = 5.0
+        w = torch.ones_like(z_gt)
+        value = comp(z_hat, z_gt, w, {"x_dem": torch.zeros((1, 5, 8, 8), dtype=torch.float32)})
+        self.assertGreater(float(value), 0.0)
+
+    def test_hydrology_terms_can_be_enabled_in_composite(self) -> None:
+        cfg = {
+            "loss_preset": "baseline",
+            "enable_hydro_flow": True,
+            "enable_hydro_pit_spike": True,
+            "lambda_hydro_flow": 0.01,
+            "lambda_hydro_pit_spike": 0.005,
+        }
+        composite = build_composite_loss_from_config(cfg)
+        z_hat = torch.randn((1, 1, 8, 8), dtype=torch.float32)
+        z_gt = torch.randn((1, 1, 8, 8), dtype=torch.float32)
+        batch = {
+            "z_gt": z_gt,
+            "w": torch.ones_like(z_gt),
+            "x_dem": torch.zeros((1, 5, 8, 8), dtype=torch.float32),
+        }
+        bundle = composite({"z_hat": z_hat}, batch)
+        self.assertIn("hydro_flow", bundle.metrics)
+        self.assertIn("hydro_pit_spike", bundle.metrics)
 
 
 if __name__ == "__main__":

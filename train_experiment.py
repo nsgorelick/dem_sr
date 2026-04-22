@@ -22,6 +22,7 @@ from core.config import (
     config_to_dict,
     resolve_config,
 )
+from core.pretraining import load_pretrained_encoder
 from core.reporting import build_train_payload
 from core.run_config import load_run_config, resolve_description, section_defaults
 from experiments.config_presets import get_preset, list_presets
@@ -145,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-json", type=Path, default=None, help="Write train payload to this path")
     parser.add_argument("--resume", type=Path, default=None, help="Resume from experiment checkpoint")
     parser.add_argument(
+        "--pretrained-encoder-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional SSL-pretrained encoder checkpoint to initialize model encoders.",
+    )
+    parser.add_argument(
         "--loss-system",
         choices=("preset", "composite"),
         default="preset",
@@ -157,6 +164,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-ms", type=float, default=0.5)
     parser.add_argument("--lambda-sdf", type=float, default=0.5)
     parser.add_argument("--lambda-contour", type=float, default=0.25)
+    parser.add_argument("--lambda-hydro-flow", type=float, default=0.01)
+    parser.add_argument("--lambda-hydro-pit-spike", type=float, default=0.005)
+    parser.add_argument(
+        "--enable-hydro-flow",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable hydrology flow-direction proxy loss term.",
+    )
+    parser.add_argument(
+        "--enable-hydro-pit-spike",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable hydrology pit/spike penalty term.",
+    )
+    parser.add_argument("--hydro-flow-temperature", type=float, default=8.0)
+    parser.add_argument("--hydro-pit-kernel-size", type=int, default=3)
+    parser.add_argument("--hydro-water-downweight", type=float, default=0.95)
+    parser.add_argument("--hydro-shoreline-downweight", type=float, default=0.7)
+    parser.add_argument("--mos-num-experts", type=int, default=3, help="Number of MoS specialist heads (2-3).")
+    parser.add_argument(
+        "--mos-router-temperature",
+        type=float,
+        default=1.0,
+        help="Softmax temperature for MoS router logits.",
+    )
+    parser.add_argument("--lambda-band-low", type=float, default=0.5)
+    parser.add_argument("--lambda-band-mid", type=float, default=0.75)
+    parser.add_argument("--lambda-band-high", type=float, default=1.0)
+    parser.add_argument("--lambda-band-high-tv", type=float, default=0.2)
+    parser.add_argument("--lambda-band-high-l2", type=float, default=0.05)
+    parser.add_argument("--lambda-band-balance", type=float, default=0.05)
     parser.add_argument("--guidance-dropout", type=float, default=0.3)
     parser.add_argument(
         "--two-stage-train-stage",
@@ -210,6 +248,7 @@ def main() -> None:
     args.checkpoint_out = _as_path(args.checkpoint_out)
     args.output_json = _as_path(args.output_json)
     args.resume = _as_path(args.resume)
+    args.pretrained_encoder_checkpoint = _as_path(args.pretrained_encoder_checkpoint)
     args.two_stage_a_checkpoint = _as_path(args.two_stage_a_checkpoint)
     apply_namespace_preset_defaults(args, parser, get_preset("train", args.preset))
     cfg = resolve_config(args)
@@ -263,6 +302,14 @@ def main() -> None:
     amp_enabled = bool(cfg.amp and device.type == "cuda")
     model_cfg = vars(args) | config_to_dict(cfg)
     model = experiment.build_model(model_cfg).to(device)
+    if args.pretrained_encoder_checkpoint is not None:
+        loaded, skipped = load_pretrained_encoder(model, args.pretrained_encoder_checkpoint)
+        log.info(
+            "Loaded pretrained encoder from %s (loaded=%d skipped=%d)",
+            args.pretrained_encoder_checkpoint,
+            loaded,
+            skipped,
+        )
     loss_fn = experiment.build_loss(model_cfg)
     trainable_params: Iterable[torch.nn.Parameter]
     if hasattr(model, "trainable_parameters"):
@@ -297,19 +344,43 @@ def main() -> None:
             scaler=scaler,
             amp_enabled=amp_enabled,
             train=True,
+            progress_desc=f"train {epoch + 1}/{args.epochs}",
         )
         elapsed = time.perf_counter() - epoch_start
         history["train_loss"].append(float(metrics["loss"]))
         history["epoch_seconds"].append(float(elapsed))
+        expert_keys = [k for k in sorted(metrics) if k.startswith("expert_util_")]
+        expert_str = " ".join(f"{k}={metrics[k]:.3f}" for k in expert_keys)
+        if "expert_entropy" in metrics:
+            expert_str = (expert_str + " " if expert_str else "") + f"expert_entropy={metrics['expert_entropy']:.3f}"
+        if "expert_divergence" in metrics:
+            expert_str = (expert_str + " " if expert_str else "") + f"expert_divergence={metrics['expert_divergence']:.4f}"
         log.info(
-            "epoch %d/%d loss=%.6f elev=%.6f slope=%.6f (%.1fs)",
+            "epoch %d/%d loss=%.6f elev=%.6f slope=%.6f %s(%.1fs)",
             epoch + 1,
             args.epochs,
             metrics.get("loss", float("nan")),
             metrics.get("elev", float("nan")),
             metrics.get("slope", float("nan")),
+            (expert_str + " ") if expert_str else "",
             elapsed,
         )
+        epoch_payload = make_training_checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            data_root=str(cfg.data_root),
+            epoch=epoch + 1,
+            args=vars(args),
+            history={"train_loss": history["train_loss"], "val_loss": []},
+            train_size=len(train_subset),
+            val_size=0,
+        )
+        epoch_out = args.checkpoint_out.with_name(
+            f"{args.checkpoint_out.stem}_epoch_{epoch + 1:03d}{args.checkpoint_out.suffix}"
+        )
+        save_training_checkpoint(epoch_out, epoch_payload)
+        log.info("Wrote %s", epoch_out)
 
     payload = make_training_checkpoint_payload(
         model=model,

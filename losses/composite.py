@@ -20,8 +20,10 @@ from losses.components import (
     ContourSDFL1Loss,
     CurvatureL1Loss,
     ElevationSmoothL1Loss,
+    FlowDirectionProxyLoss,
     GradientL1Loss,
     MultiScaleElevationSmoothL1Loss,
+    PitSpikePenaltyLoss,
     SlopeL1Loss,
 )
 
@@ -29,7 +31,13 @@ from losses.components import (
 class LossComponent(Protocol):
     name: str
 
-    def __call__(self, z_hat: torch.Tensor, z_gt: torch.Tensor, w: torch.Tensor) -> torch.Tensor: ...
+    def __call__(
+        self,
+        z_hat: torch.Tensor,
+        z_gt: torch.Tensor,
+        w: torch.Tensor,
+        batch: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -56,7 +64,7 @@ class CompositeLoss:
         for component, weight, enabled in self.components:
             if not enabled:
                 continue
-            value = component(z_hat, z_gt, w)
+            value = component(z_hat, z_gt, w, batch)
             weighted = float(weight) * value
             total = total + weighted
             metrics[component.name] = float(value.detach())
@@ -119,6 +127,24 @@ def build_composite_loss_from_config(cfg: dict[str, Any]) -> CompositeLoss:
             ContourIndicatorL1Loss(contour_interval=contour_interval),
             float(cfg.get("lambda_contour", 0.25)),
             bool(cfg.get("enable_contour", switches["contour"])),
+        ),
+        (
+            FlowDirectionProxyLoss(
+                softmax_temperature=float(cfg.get("hydro_flow_temperature", 8.0)),
+                water_downweight=float(cfg.get("hydro_water_downweight", 0.95)),
+                shoreline_downweight=float(cfg.get("hydro_shoreline_downweight", 0.7)),
+            ),
+            float(cfg.get("lambda_hydro_flow", 0.01)),
+            bool(cfg.get("enable_hydro_flow", False)),
+        ),
+        (
+            PitSpikePenaltyLoss(
+                kernel_size=int(cfg.get("hydro_pit_kernel_size", 3)),
+                water_downweight=float(cfg.get("hydro_water_downweight", 0.95)),
+                shoreline_downweight=float(cfg.get("hydro_shoreline_downweight", 0.7)),
+            ),
+            float(cfg.get("lambda_hydro_pit_spike", 0.005)),
+            bool(cfg.get("enable_hydro_pit_spike", False)),
         ),
     ]
     return CompositeLoss(components)

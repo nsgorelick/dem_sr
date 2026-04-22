@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from core.data_schema import validate_batch, validate_model_outputs
 from experiments.base import LossBundle
@@ -23,6 +24,7 @@ def run_epoch(
     scaler: torch.amp.GradScaler | None,
     amp_enabled: bool,
     train: bool,
+    progress_desc: str | None = None,
 ) -> dict[str, float]:
     """Run one train/eval epoch and return aggregated scalar metrics."""
     if train and optimizer is None:
@@ -34,7 +36,11 @@ def run_epoch(
     metric_sums: dict[str, float] = {}
     metric_counts: dict[str, int] = {}
 
-    for batch_raw in loader:
+    batch_iter = loader
+    if progress_desc:
+        batch_iter = tqdm(loader, desc=progress_desc, leave=False, dynamic_ncols=True)
+
+    for batch_raw in batch_iter:
         batch: dict[str, Any] = dict(batch_raw)
         validate_batch(batch, require_ae=True)
         batch_tensors = {
@@ -72,6 +78,13 @@ def run_epoch(
         for name, value in bundle.metrics.items():
             metric_sums[name] = metric_sums.get(name, 0.0) + float(value)
             metric_counts[name] = metric_counts.get(name, 0) + 1
+        if progress_desc and hasattr(batch_iter, "set_postfix"):
+            postfix = {"loss": f"{total_loss / max(total_batches, 1):.4f}"}
+            if "elev" in bundle.metrics:
+                postfix["elev"] = f"{bundle.metrics['elev']:.4f}"
+            if "slope" in bundle.metrics:
+                postfix["slope"] = f"{bundle.metrics['slope']:.4f}"
+            batch_iter.set_postfix(postfix)
 
     mean_loss = total_loss / max(total_batches, 1)
     out = {"loss": mean_loss, "n_batches": float(total_batches)}

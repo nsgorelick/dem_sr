@@ -1,10 +1,11 @@
-# Plan 09 Full-Set Multitask Retest
+# Baseline Full/Full Retest
 
-This run directory is for the confirmation configuration:
+This run directory is the non-multitask baseline configuration:
 
-- preset: `multitask`
+- preset: `baseline`
 - train: full non-AU set (`HARD_FRACTION=1.0` equivalent)
 - eval: full AU val set (`VAL_HARD_FRACTION=1.0` equivalent)
+- epochs: `6`
 
 ## 1) Use canonical fraction-1 manifests
 
@@ -16,16 +17,15 @@ This run uses shared reusable manifests:
 ## 2) Run training
 
 ```bash
-python3 train_experiment.py --config experiment-runs/09-multitask-full-non-au-full-au-val/run_config.json
+python3 train_experiment.py --config experiment-runs/baseline_full_full/run_config.json
 ```
 
 ## 3) Run evaluation
 
 ```bash
-python3 eval_experiment.py --config experiment-runs/09-multitask-full-non-au-full-au-val/run_config.json
+python3 eval_experiment.py --config experiment-runs/baseline_full_full/run_config.json
 ```
 
 Since `eval.output_json` is `null`, the standardized eval result JSON is written under:
 
-- `experiment-runs/09-multitask-full-non-au-full-au-val/results/`
-
+- `experiment-runs/baseline_full_full/results/`

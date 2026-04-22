@@ -5,8 +5,10 @@ from .components import (
     ContourSDFL1Loss,
     CurvatureL1Loss,
     ElevationSmoothL1Loss,
+    FlowDirectionProxyLoss,
     GradientL1Loss,
     MultiScaleElevationSmoothL1Loss,
+    PitSpikePenaltyLoss,
     SlopeL1Loss,
 )
 from .composite import CompositeLoss, build_composite_loss_from_config
@@ -21,5 +23,7 @@ __all__ = [
     "MultiScaleElevationSmoothL1Loss",
     "ContourSDFL1Loss",
     "ContourIndicatorL1Loss",
+    "FlowDirectionProxyLoss",
+    "PitSpikePenaltyLoss",
 ]
 
