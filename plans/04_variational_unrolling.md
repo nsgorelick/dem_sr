@@ -1,51 +1,230 @@
-# Plan: Physics-Inspired Variational Unrolling
+# Plan: Variationally Regularized Residual Unrolling (Rewritten)
 
-## Goal
-Unroll an optimization process with learnable proximal steps instead of direct black-box regression.
+## 1) Goal (Refined)
 
-## Residual + Safeguard Requirements
-- Unrolled state should optimize a **residual** correction from `z_lr`, not direct DEM state.
-- Final reconstruction remains `z_hat = z_lr + r`.
-- Constrain residual magnitude (explicit cap/projection per iteration or at output).
-- Keep weighted masking (`W`), finite-value sanitization, and uncertainty-aware weighting terms.
-- Keep evaluation parity with baseline metrics and non-AU/AU split discipline.
+Develop a **residual refinement model based on unrolled optimization**, combining:
 
-## Why This Is Different
-- Current approach is pure supervised mapping.
-- Unrolling combines data fidelity and explicit terrain priors in iterative updates.
+* explicit objective terms (fidelity + regularization),
+* iterative updates,
+* lightweight learnable refinement blocks.
 
-## Implementation Plan
-1. Define objective terms:
-  - fidelity to observed/baseline structure,
-  - smoothness/anisotropic regularization,
-  - contour-aware prior term.
-2. Implement `K` unrolled iterations with learnable step sizes and proximal blocks.
-3. Train end-to-end on weighted pixel loss plus objective consistency terms.
-4. Tune iteration count for speed/quality tradeoff.
+This introduces **structured inductive bias** for terrain plausibility while retaining learnable flexibility.
 
-## Required Beyond New Model
-- **Objective-definition work**
-  - Formalize terrain priors and differentiable penalties.
-  - Decide fixed vs learnable regularization weights.
-- **Training pipeline changes**
-  - Add stability controls (gradient clipping, step-size constraints).
-  - Add logging of per-iteration objective values.
-- **Inference updates**
-  - Expose iteration count and optional early-stop criteria.
-- **Evaluation additions**
-  - Track physical plausibility diagnostics (e.g., roughness spikes, curvature outliers).
+Final output remains:
 
-## Data and Preprocessing Needs
-- Existing inputs can be used directly.
-- May need additional quality masks for robust fidelity weighting in noisy regions.
+* `z_hat = z_lr + r`
 
-## Evaluation Plan
-- Compare standard metrics and plausibility diagnostics.
-- Validate generalization to AU strata with weak supervision quality.
+---
 
-## Risks
-- Harder optimization and sensitivity to hyperparameters.
-- Can be slower than feed-forward models at inference.
+## 2) Core Hypothesis
 
-## Pilot Exit Criteria
-- Keep if it improves robustness on hard strata and reduces curvature artifacts.
+Black-box residual models may:
+
+* overfit noise,
+* produce curvature artifacts,
+* lack control over smoothness vs detail.
+
+Unrolling an explicit objective can:
+
+* stabilize corrections,
+* enforce plausible terrain structure,
+* improve robustness in weak/noisy supervision regions.
+
+---
+
+## 3) Key Design Constraints (Non-Negotiable)
+
+* Optimize **residual correction**, not absolute DEM
+* Residual clamping enforced per iteration or at output
+* Use same masking (`W`), uncertainty, and trust conditioning
+* Maintain identical evaluation metrics and splits
+* Keep objective terms explicit and interpretable
+
+---
+
+## 4) First Pilot Objective (Strictly Defined)
+
+Define residual-space energy:
+
+E(r) =
+
+* **Fidelity term:**
+
+  * weighted error to target (`W * (z_lr + r - z_gt)`)
+
+* **Baseline anchoring term:**
+
+  * discourages unnecessary large corrections
+
+* **Edge-aware smoothness term:**
+
+  * anisotropic regularization (preserve slopes, suppress noise)
+
+* **Curvature control term:**
+
+  * penalize extreme curvature/spikes
+
+This objective must be:
+
+* differentiable
+* used consistently across training and analysis
+
+---
+
+## 5) Unrolled Architecture
+
+### 5.1 Iterative Update
+
+Initialize:
+
+* `r_0 = 0`
+
+For k = 1…K:
+
+* compute gradient of objective terms
+
+* apply update step:
+
+  * `r_k = r_{k-1} - α_k * grad(E)`
+
+* apply learnable refinement block (proximal step)
+
+---
+
+### 5.2 Learnable Components
+
+Each iteration includes:
+
+* learnable step size `α_k` (bounded)
+* small refinement/proximal network
+
+Constraint:
+
+* refinement block must be lightweight (not full model)
+
+---
+
+### 5.3 Iteration Count
+
+* fixed small K (e.g., 3–5)
+* tune K for quality vs cost
+
+---
+
+## 6) Training Procedure
+
+### 6.1 End-to-End Training
+
+* unroll K iterations
+* supervise final output
+
+### 6.2 Auxiliary Monitoring
+
+Track per-iteration:
+
+* objective value
+* residual magnitude
+
+Ensure:
+
+* monotonic or stable improvement across iterations
+
+---
+
+## 7) Stability Controls (Required)
+
+* gradient clipping
+* bounded step sizes
+* residual magnitude caps
+
+Prevent:
+
+* divergence
+* oscillation
+
+---
+
+## 8) Baseline Comparisons (Critical)
+
+Compare against:
+
+* best feed-forward residual model
+* parameter-matched iterative/refinement model (no explicit objective)
+
+Purpose:
+
+* isolate benefit of variational structure vs iteration alone
+
+---
+
+## 9) Evaluation Plan
+
+### 9.1 Metrics
+
+* elevation RMSE / MAE
+* slope RMSE
+* curvature / Laplacian RMSE
+
+### 9.2 Plausibility Diagnostics (Primary)
+
+* roughness spikes
+* curvature outliers
+* speckle artifacts
+
+### 9.3 Stratified Evaluation
+
+* high-slope terrain
+* high-uncertainty regions
+* AU generalization
+
+---
+
+## 10) Pilot Success Criteria
+
+Must satisfy ALL:
+
+* reduced curvature artifacts and speckle
+* improved robustness in hard strata
+* no regression in elevation RMSE
+* stable iteration behavior (no divergence)
+
+---
+
+## 11) Risks
+
+### Objective Mis-specification
+
+* poorly chosen terms give no benefit
+
+### Collapse to Generic Network
+
+* proximal blocks dominate, ignoring explicit objective
+
+### Optimization Instability
+
+* sensitive to step sizes and scaling
+
+### Compute Cost
+
+* multiple iterations increase inference time
+
+---
+
+## 12) Position in Pipeline
+
+This is a:
+
+**structured, regularized alternative to black-box residual learning**
+
+It targets plausibility and robustness rather than raw expressivity.
+
+---
+
+## 13) Summary
+
+This plan reframes the problem as:
+
+> Iteratively optimize a residual correction under explicit terrain-aware constraints.
+
+Success depends on whether the defined objective meaningfully captures terrain structure better than unconstrained learning.
+

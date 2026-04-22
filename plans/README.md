@@ -20,6 +20,7 @@ This document ranks the plans in this folder by expected upside, implementation 
 
 | Rank | Approach | Effort | Expected Upside | Time to First Signal | Notes |
 |---|---|---|---|---|---|
+| 0 | Contour-aware hard-subset preset sweep | Low | High diagnostic value | Very Fast | Fast screening protocol for `contours.md` loss presets |
 | 1 | Two-stage global+local | Medium | High | Fast | Strong fit for bias + detail decomposition |
 | 2 | Large-context tile training | Medium-High | High | Medium | Likely to improve context-limited terrain cases |
 | 3 | Mixture-of-specialists | Medium-High | Medium-High | Medium | Leverages existing strata/eval bins |
@@ -31,6 +32,7 @@ This document ranks the plans in this folder by expected upside, implementation 
 
 ## Recommended Execution Order
 
+0. `09_hard_subset_loss_preset_sweep.md` (contour-aware loss screening from `contours.md`)
 1. `02_two_stage_global_local.md`
 2. `05_large_context_tiles.md`
 3. `06_mixture_of_specialists.md`
@@ -41,6 +43,7 @@ This document ranks the plans in this folder by expected upside, implementation 
 8. `01_diffusion_refinement.md`
 
 Rationale:
+- Start with a very fast contour-loss screening pass to select the best supervision preset before heavier architecture work.
 - Start with methods that keep most of the current stack intact but change problem structure.
 - Add one architectural "shape" change at a time before taking on major infrastructure-heavy research.
 - Keep a non-neural baseline running in parallel to identify whether deep modeling is the true bottleneck.
