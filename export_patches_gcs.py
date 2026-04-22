@@ -18,7 +18,7 @@ import ee
 import rasterio
 from rasterio.io import MemoryFile
 
-from adaptive_export_runner import AdaptiveThreadExportRunner
+from adaptive_export_runner import AdaptiveThreadExportRunner, ee_concurrency_error
 from export_progress import ExportProgressLine
 
 # ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ HIGHVOL_URL = EE_INIT_KWARGS["opt_url"]
 
 EE_COMPUTEPIXELS_PARALLEL_PER_PATCH = 2
 DEFAULT_EXPORT_POOL_WORKERS = 50
+SCALE_DOWN_MIN_INTERVAL_SEC = 1.0
 
 _TIF_EXT = ".tif"
 _AE_SUFFIX = "_aef_uint8.tif"
@@ -555,6 +556,17 @@ def fetch_patch_items(collection_ids: Sequence[str]) -> list[dict]:
     return items
 
 
+def _export_concurrency_error(exc: BaseException) -> bool:
+    """Treat connection-pool saturation as overload so adaptive runner scales down."""
+    if ee_concurrency_error(exc):
+        return True
+    msg = str(exc).lower()
+    return (
+        "connection pool is full" in msg
+        or ("connection pool" in msg and "full" in msg)
+    )
+
+
 def export_one_patch(item: dict) -> dict:
     """Run ``computePixels`` for DTM stack + annual embedding; write ZSTD GeoTIFFs.
 
@@ -638,10 +650,12 @@ def run_export(pool_workers: int | None = None) -> None:
         initial_concurrent=pool_workers,
         quiet_before_scale_up_sec=10.0,
         scale_down_step=1,
+        scale_down_min_interval_sec=SCALE_DOWN_MIN_INTERVAL_SEC,
         scale_up_step=1,
         max_tries=10,
         retry_base_delay_sec=1.0,
         retry_backoff=2.0,
+        is_concurrency_error=_export_concurrency_error,
     )
     progress = ExportProgressLine(rate_window_sec=_PROGRESS_RATE_WINDOW_SEC)
 

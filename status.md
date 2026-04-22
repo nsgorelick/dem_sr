@@ -24,27 +24,18 @@ Current environment assumptions:
 
 ## Data Splits
 
-Deterministic manifest split already exists:
+Split policy has changed from the old seed-42 random holdout.
 
-- `train_manifest_seed42.txt`
-- `holdout_manifest_seed42.txt`
-- `manifest_summary_seed42.json`
+Current target protocol:
 
-Counts from `manifest_summary_seed42.json`:
+- training set: all non-AU patches
+- validation set: AU patches
 
-- total patches: `150,521`
-- holdout patches: `15,052`
-- train patches: `135,469`
-- holdout fraction: `10%`
-- seed: `42`
+Implications:
 
-Note: this is a random patch-level holdout, not a strict spatial holdout, and it should no longer be treated as the final evaluation protocol.
-
-Australia evaluation protocol now supported:
-
-- a patch-summary table from Earth Engine can now drive a **locked** country-specific final test manifest
-- the intended use is to reserve the Australia patches as the final test set and keep them out of model selection
-- development manifests should come from the remaining pool outside the locked Australia set
+- old random train/holdout metrics are deprecated for model selection
+- manifests should be regenerated to reflect the non-AU/AU split before new training runs
+- architecture screening and benchmark comparisons should use this split consistently
 
 ## Code Changes Made
 
@@ -244,6 +235,8 @@ A 15-epoch training run completed successfully.
 
 ## Evaluation Commands
 
+The commands below are legacy examples from the previous holdout workflow and should be updated to the new non-AU/AU manifests before use.
+
 ### Evaluate model only
 
 ```bash
@@ -342,245 +335,27 @@ python export_comparison_dtms.py \
   --max-tries 1
 ```
 
-## Recorded Metrics
+## Performance Tracking Reset
 
-From `eval_holdout_model_zlr_fabdem.json`:
+Performance reporting in this file has been intentionally reset.
 
-### Model
+Reason:
 
-- patches: `15,052`
-- sum(W): `151,686,976.4171`
-- elev bias: `-0.4435 m`
-- elev MAE: `1.3380 m`
-- elev RMSE: `3.2045 m`
-- slope MAE: `0.031955`
-- slope RMSE: `0.558762`
-- slope MAE deg: `1.4098 deg`
-- slope RMSE deg: `2.9654 deg`
+- prior metrics were based on the old random patch-level holdout (`holdout_manifest_seed42.txt`)
+- the project is now switching to a new split protocol and full architecture re-screening
+- old numbers are no longer the authoritative comparison baseline
 
-### `z_lr`
+New protocol to use going forward:
 
-- patches: `15,052`
-- sum(W): `151,686,976.4171`
-- elev bias: `-0.4154 m`
-- elev MAE: `1.8445 m`
-- elev RMSE: `3.7796 m`
-- slope MAE: `0.043852`
-- slope RMSE: `0.560333`
-- slope MAE deg: `2.0694 deg`
-- slope RMSE deg: `3.7344 deg`
+- train split: all **non-AU** patches
+- validation split: **AU** patches
+- model comparison set: all supported `--arch` options under the same split and run budget
 
-### FABDEM raster
+Status:
 
-- patches: `15,052`
-- sum(W): `151,686,976.4171`
-- elev bias: `-0.1195 m`
-- elev MAE: `1.7228 m`
-- elev RMSE: `3.8222 m`
-- slope MAE: `0.037092`
-- slope RMSE: `0.559958`
-- slope MAE deg: `1.6927 deg`
-- slope RMSE deg: `3.5172 deg`
-
-From `eval_holdout_model_zlr_fabdem_aug15.json`:
-
-### Model (`dem_film_unet_aug15.pt`)
-
-- patches: `15,052`
-- sum(W): `151,686,976.4171`
-- elev bias: `+0.1072 m`
-- elev MAE: `1.2488 m`
-- elev RMSE: `3.2199 m`
-- slope MAE: `0.033840`
-- slope RMSE: `0.559041`
-- slope MAE deg: `1.5131 deg`
-- slope RMSE deg: `3.0998 deg`
-
-## What We Learned
-
-### TDEM_EDEM status
-
-The earlier TDEM bias-offset / vertical-datum detour is no longer the active issue after switching to a newer TDEM product.
-
-What matters for current status:
-
-- the old inline datum-correction attempt was backed out
-- the newer product removed the previously observed gross bias problem
-- `tdem_edem` remains available as an external comparison product in `export_comparison_dtms.py`
-- future TDEM evaluation should be treated as a straightforward comparison run against the current downloaded product, not as a current export-pipeline blocker
-
-### Model vs `z_lr`
-
-The model clearly improves on the input DEM baseline.
-
-Improvements over `z_lr`:
-
-- elevation MAE: `1.8445 -> 1.3380 m`
-  - gain: `0.5065 m`
-  - improvement: `27.5%`
-- elevation RMSE: `3.7796 -> 3.2045 m`
-  - gain: `0.5750 m`
-  - improvement: `15.2%`
-- slope MAE deg: `2.0694 -> 1.4098 deg`
-  - gain: `0.6595 deg`
-  - improvement: `31.9%`
-- slope RMSE deg: `3.7344 -> 2.9654 deg`
-  - gain: `0.7690 deg`
-  - improvement: `20.6%`
-
-### FABDEM diagnosis
-
-The original FABDEM result was invalid because the comparison exporter was using the wrong patch-grid anchor.
-
-What was found:
-
-- the exported FABDEM rasters were shifted by half a patch (`640 m` in both `x` and `y`) relative to the training stack grid
-- the root cause was a center-anchored grid helper in the exporter, while the training data and Earth Engine patch collections use corner-anchored patch coordinates
-- both `export_comparison_dtms.py` and the current checked-in `export_patches_gcs.py` were updated to use the correct corner anchoring
-- a one-patch re-export was verified to match existing training-stack bounds exactly
-
-After fixing the exporter and re-running holdout evaluation, FABDEM became a credible baseline:
-
-- elevation MAE: `1.7228 m`
-- elevation RMSE: `3.8222 m`
-- slope MAE deg: `1.6927 deg`
-- slope RMSE deg: `3.5172 deg`
-
-Interpretation:
-
-- the previous FABDEM failure was caused by grid misalignment, not by a bad vertical datum or unusable source product
-- FABDEM is now clearly competitive with `z_lr`
-- the trained model still outperforms both `z_lr` and corrected FABDEM on this holdout
-
-Corrected FABDEM comparison:
-
-- vs `z_lr`
-  - elevation MAE: `1.8445 -> 1.7228 m` (`6.6%` better)
-  - slope MAE deg: `2.0694 -> 1.6927 deg` (`18.2%` better)
-  - slope RMSE deg: `3.7344 -> 3.5172 deg` (`5.8%` better)
-- vs model
-  - elevation MAE: `1.7228 -> 1.3380 m` (`22.3%` better for model)
-  - elevation RMSE: `3.8222 -> 3.2045 m` (`16.2%` better for model)
-  - slope MAE deg: `1.6927 -> 1.4098 deg` (`16.7%` better for model)
-  - slope RMSE deg: `3.5172 -> 2.9654 deg` (`15.7%` better for model)
-
-### Customer example workflow
-
-Customer-example selection and packaging is now implemented end to end.
-
-What was added:
-
-- `eval_dem.py` can emit full per-patch metrics and ranking fields
-- a selected customer-example manifest was created in `customer_example_chips_manifest.txt`
-- the current manifest contains `23` chips:
-  - original top set
-  - one Portugal example
-  - ten additional chips added for broader coverage
-- model prediction TIFFs can be generated and uploaded to Earth Engine for any selected manifest via `upload_customer_example_predictions.py`
-- local `2x4` panel PNGs can be rendered via `make_customer_example_panels.py`
-
-Current status:
-
-- prediction TIFFs exist in `customer_example_predictions/tifs`
-- panel PNGs exist in `customer_example_predictions/panels`
-- the added `10` chips were submitted to:
-  - `users/ngorelick/DTM/tmp/customer_example_predictions`
-- submission metadata for that latest batch is recorded in:
-  - `customer_example_predictions/submitted_ingestions.json`
-
-### Checkpoint / training-curve diagnosis
-
-The old checkpoints did **not** contain saved loss curves, so direct inspection of training flattening had to be done by re-evaluating checkpoints on a fixed holdout subset.
-
-Checkpoint evaluation used:
-
-- sample: first `512` patches from `holdout_manifest_seed42.txt`
-- metrics: weighted elevation RMSE and slope RMSE in degrees from `eval_dem.py`
-
-Observed checkpoint trend on that fixed sample:
-
-- baseline `z_lr`: elev RMSE `2.7988`, slope RMSE deg `3.5065`
-- epoch `1`: elev RMSE `2.6829`, slope RMSE deg `3.4772`
-- epoch `2`: elev RMSE `2.6322`, slope RMSE deg `3.1568`
-- epoch `3`: elev RMSE `2.2202`, slope RMSE deg `2.9994`
-- epoch `10`: elev RMSE `2.2093`, slope RMSE deg `2.9099`
-- epoch `12`: elev RMSE `2.1395`, slope RMSE deg `2.9388`
-- epoch `15`: elev RMSE `2.1412`, slope RMSE deg `2.8697`
-
-What this suggests:
-
-- most of the gain happens early, especially by epoch `3`
-- later epochs still help a bit, but returns are much smaller and somewhat noisy
-- from epoch `3` to epoch `15`, the sample only improved about:
-  - `3.6%` more in elevation RMSE
-  - `4.3%` more in slope RMSE deg
-- practical takeaway: training appears to flatten fairly early, roughly around epochs `3-6`
-
-Follow-up change made:
-
-- `train_dem.py` now writes loss history into every new checkpoint so future runs can be inspected without re-evaluating model files
-
-### Augmented 15-epoch run (`dem_film_unet_aug15.pt`)
-
-Training run settings (latest run):
-
-- batch size: `32`
-- workers: `3`
-- epochs: `15`
-- augmentation: `--augment-rotflip` enabled
-- checkpoint prefix: `dem_film_unet_aug15*.pt`
-
-Checkpoint-history summary:
-
-- train size: `135,469`
-- val size: `0` (no validation split in this run)
-- epoch 1 train loss: `1.4631`
-- epoch 15 train loss: `1.0485`
-- train loss dropped by about `28.3%` across 15 epochs
-
-Holdout comparison vs prior model (`dem_film_unet.pt`):
-
-- improved:
-  - elevation MAE: `1.3380 -> 1.2488 m`
-- regressed:
-  - elevation RMSE: `3.2045 -> 3.2199 m`
-  - slope MAE deg: `1.4098 -> 1.5131 deg`
-  - slope RMSE deg: `2.9654 -> 3.0998 deg`
-- bias shifted from `-0.4435 m` to `+0.1072 m`
-
-Interpretation:
-
-- simple rot/flip augmentation improved elevation MAE but hurt slope-sensitive metrics and slightly hurt elevation RMSE on the full holdout
-- this run is useful evidence, but it does not replace the current best checkpoint for overall multi-metric performance
-
-## Architecture Screening Update (6-epoch holdout)
-
-Short-run screening checkpoints now exist for:
-
-- `dem_film_unet_arch_gated_6ep.pt`
-- `dem_film_unet_arch_xattn_6ep.pt`
-- `dem_film_unet_arch_hybrid_tf_6ep.pt`
-- `dem_film_unet_arch_rcan_ae_6ep.pt`
-
-Holdout eval highlights (`holdout_manifest_seed42.txt`):
-
-- best single-model elevation metrics among screened variants: `xattn_unet`
-  - elevation MAE: `1.2911 m`
-  - elevation RMSE: `3.1849 m`
-- best screened slope metrics (single model): baseline-like FiLM behavior remains stronger than pure xattn on slope
-- `rcan_ae_unet` instability issue (NaNs) was resolved for the 6-epoch run and final eval now produces finite metrics
-
-New no-retrain blend finding (inference-time residual ensemble):
-
-- blending `dem_film_unet.pt` with `dem_film_unet_arch_xattn_6ep.pt` improved over prior single-model results
-- tested residual blend weights `w` where:
-  - `z_hat = z_lr + (1 - w) * r_film + w * r_xattn`
-- practical default/balanced pick: `w=0.25`
-  - elev MAE: `1.2947`
-  - elev RMSE: `3.1610`
-  - slope MAE deg: `1.4075`
-  - slope RMSE deg: `2.9631`
-- elevation-first pick: `w=0.60` (best MAE/RMSE elevation, weaker slope than `w=0.25`)
+- keep old eval JSON artifacts for traceability, but do not use them as current decision metrics
+- regenerate model/baseline comparisons and architecture rankings under the new split
+- repopulate this section only after those reruns complete
 
 ## Current File Outputs
 
@@ -613,26 +388,24 @@ Known outputs in repo:
 
 ## Recommended Next Steps
 
-1. Add a small helper command/script for paired training of blend components (`film_unet` + `xattn_unet`) so inference-time blending is reproducible.
-2. Check Earth Engine task completion for the customer-example asset submissions and verify that all selected chips are available in `users/ngorelick/DTM/tmp/customer_example_predictions`.
-3. Decide a primary blend operating point (`w=0.25` balanced vs `w=0.60` elevation-first), then lock it into evaluation/reporting defaults.
-4. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
-5. Run the same augmented training recipe with a small validation split (or equivalent holdout checkpoint sweep) so augmentation effects can be selected by validation/holdout metrics rather than train loss alone.
-6. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
-7. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
-8. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
+1. Run `run_arch_non_au_vs_au.sh` with `PATCH_TABLE=200k.geojson` to generate manifests and execute the full 6-epoch `--arch` sweep.
+2. Confirm manifest summary output under `runs/<run_name>/manifests/manifest_summary_non_au_vs_au.json` to verify train=non-AU and val=AU counts.
+3. Evaluate all checkpoints with the same eval config and regenerate comparison JSON outputs.
+4. Recompute architecture ranking and, if desired, blend candidates only after fresh per-arch metrics exist.
+5. Rebuild any per-patch ranking tables needed for customer examples from the new validation outputs.
+6. Update this status file with the new split-specific metrics and conclusions.
 
 ## Notes For Next Chat
 
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
-- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` and now optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
+- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` and optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
 - `plan.md` tracks architecture experiments and example commands
-- the FABDEM benchmark was fixed by correcting a half-patch grid offset in the comparison exporter
-- corrected FABDEM is now a credible baseline and is better than `z_lr` on most holdout metrics, but still worse than the model
-- checkpoint analysis suggests training flattens fairly early, around epochs `3-6`
-- new training checkpoints now store train/val loss curves
-- `eval_dem.py` already supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection, and now supports inference-time model blending with default `--blend-weight 0.25`
+- `run_arch_non_au_vs_au.sh` is the primary sweep script and expects `PATCH_TABLE` (current table: `200k.geojson`)
+- performance metrics in this file were intentionally reset and must be regenerated under the new split
+- current split target is: train on non-AU patches, validate on AU patches
+- new training checkpoints store train/val loss curves
+- `eval_dem.py` supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection
 - `export_comparison_dtms.py` already exports separate per-product patch rasters from Earth Engine
-- the current customer-example package includes a `23`-chip manifest, local prediction TIFFs, local panel PNGs, and EE uploads for the selected examples
+- customer-example assets/workflow exist, but any ranking claims should be refreshed from new validation outputs
