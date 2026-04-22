@@ -318,39 +318,44 @@ class ChannelAttention(nn.Module):
 class RCAB(nn.Module):
     """Residual channel-attention block (RCAN-style)."""
 
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, residual_scale: float = 0.1) -> None:
         super().__init__()
+        self.residual_scale = residual_scale
         self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.norm1 = _group_norm(channels)
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.norm2 = _group_norm(channels)
         self.act = nn.SiLU()
         self.ca = ChannelAttention(channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.act(self.conv1(x))
-        y = self.conv2(y)
+        y = self.act(self.norm1(self.conv1(x)))
+        y = self.norm2(self.conv2(y))
         y = self.ca(y)
-        return x + y
+        return x + self.residual_scale * y
 
 
 class ResidualGroup(nn.Module):
     """Stack of RCAB blocks with group-level residual."""
 
-    def __init__(self, channels: int, num_blocks: int) -> None:
+    def __init__(self, channels: int, num_blocks: int, residual_scale: float = 0.1) -> None:
         super().__init__()
-        self.blocks = nn.Sequential(*(RCAB(channels) for _ in range(num_blocks)))
+        self.residual_scale = residual_scale
+        self.blocks = nn.Sequential(*(RCAB(channels, residual_scale=residual_scale) for _ in range(num_blocks)))
         self.tail = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.blocks(x)
         y = self.tail(y)
-        return x + y
+        return x + self.residual_scale * y
 
 
 class AEFusionGate(nn.Module):
     """Channel-aware AE conditioning for RCAN trunk."""
 
-    def __init__(self, feat_ch: int) -> None:
+    def __init__(self, feat_ch: int, alpha: float = 0.1) -> None:
         super().__init__()
+        self.alpha = alpha
         self.ae_proj = nn.Conv2d(64, feat_ch, 1, bias=False)
         self.gate = nn.Sequential(
             nn.Conv2d(feat_ch * 2, feat_ch, 1, bias=True),
@@ -362,7 +367,7 @@ class AEFusionGate(nn.Module):
     def forward(self, f_dem: torch.Tensor, x_ae: torch.Tensor) -> torch.Tensor:
         a = self.ae_proj(x_ae)
         g = self.gate(torch.cat([f_dem, a], dim=1))
-        return f_dem + g * a
+        return f_dem + self.alpha * g * a
 
 
 class DemFilmUNet(nn.Module):
@@ -690,9 +695,11 @@ class DemHybridTransformerUNet(nn.Module):
 class DemRCANAE(nn.Module):
     """RCAN-style DEM SR backbone with AE-conditioned trunk."""
 
-    feat_ch = 64
-    num_groups = 6
-    blocks_per_group = 4
+    feat_ch = 48
+    num_groups = 4
+    blocks_per_group = 3
+    group_residual_scale = 0.1
+    ae_alpha = 0.1
 
     def __init__(self, r_cap: float = 20.0) -> None:
         super().__init__()
@@ -700,10 +707,13 @@ class DemRCANAE(nn.Module):
         c = self.feat_ch
 
         self.dem_head = nn.Conv2d(5, c, 3, padding=1, bias=False)
-        self.ae_fusion = AEFusionGate(c)
+        self.ae_fusion = AEFusionGate(c, alpha=self.ae_alpha)
         self.pre_ca = ChannelAttention(c)
         self.groups = nn.Sequential(
-            *(ResidualGroup(c, self.blocks_per_group) for _ in range(self.num_groups))
+            *(
+                ResidualGroup(c, self.blocks_per_group, residual_scale=self.group_residual_scale)
+                for _ in range(self.num_groups)
+            )
         )
         self.trunk_tail = nn.Conv2d(c, c, 3, padding=1, bias=False)
         self.res_head = nn.Sequential(

@@ -239,7 +239,10 @@ def makeCollectionAU(year, zone):
     cs = (
         ee.ImageCollection("AU/ELVIS/ELVIS_5m")
         .merge(ee.ImageCollection("AU/ELVIS/ELVIS_2m"))
-        .merge(ee.ImageCollection("AU/ELVIS/ELVIS_1m"))
+        .merge(ee.ImageCollection("AU/ELVIS/ELVIS_1m")
+          .filter(ee.Filter.stringContains(
+              "system:index", 
+              "UpperNamoiNorth202304_BATCH_ELVIS_1m_PROJCSGDA2_103").not())
         .select([0], ["elevation"])
         .cast({"elevation": "float"}, ["elevation"])
         .map(elvis_au_image_ensure_year)
@@ -531,6 +534,8 @@ def fetch_patch_items(collection_ids: Sequence[str]) -> list[dict]:
     for collection_path in collection_ids:
         fc = (
             ee.FeatureCollection(collection_path)
+            # Only downloading the AU patches now.
+            .filter(ee.Filter.equals("country", "AU"))
             .filter(
                 ee.Filter.And(
                     ee.Filter.gte("year", SATELLITE_EMBEDDING_MIN_YEAR),
@@ -607,7 +612,7 @@ def export_one_patch(item: dict) -> dict:
 
 def run_export(pool_workers: int | None = None) -> None:
     collection_ids = [
-        "users/ngorelick/DTM/tmp/sample_us_100k",
+        # "users/ngorelick/DTM/tmp/sample_us_100k",
         "users/ngorelick/DTM/tmp/sample_100k"
     ]
     items = fetch_patch_items(collection_ids)

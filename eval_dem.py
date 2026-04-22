@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from local_patch_dataset import (
     list_patch_stems,
     load_patch_stems_manifest,
 )
+from patch_table import load_patch_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +34,22 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("eval_dem")
+
+PATCH_TABLE_FIELDS = (
+    "p90_slope",
+    "frac_shore",
+    "frac_water",
+    "has_edge",
+    "frac_building",
+    "mean_uncert",
+    "mean_W",
+    "valid_frac",
+    "gt_coverage_mean",
+    "resid_scale",
+    "relief",
+    "stratum_id",
+)
+STRATA_FIELDS = ("slope_bin", "hydrology_bin", "building_bin", "uncertainty_bin")
 
 
 def update_metric_sums(
@@ -109,6 +127,190 @@ def parse_patch_stem(stem: str) -> dict[str, int | str] | None:
         }
     except ValueError:
         return None
+
+
+def get_numeric(row: dict[str, object], *keys: str) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def canonicalize_patch_table_row(row: dict[str, object]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    out["p90_slope"] = get_numeric(row, "p90_slope", "slope_p90")
+    out["frac_shore"] = get_numeric(row, "frac_shore", "shore_mean")
+    out["frac_water"] = get_numeric(row, "frac_water", "water_mean")
+    out["has_edge"] = get_numeric(row, "has_edge")
+    out["frac_building"] = get_numeric(row, "frac_building", "bld_mean")
+    out["mean_uncert"] = get_numeric(row, "mean_uncert", "U_lr10_mean")
+    out["mean_W"] = get_numeric(row, "mean_W", "weight_mean")
+    out["valid_frac"] = get_numeric(row, "valid_frac", "weight_valid_mean")
+    out["gt_coverage_mean"] = get_numeric(row, "gt_coverage_mean")
+    out["resid_scale"] = get_numeric(row, "resid_scale", "residAbs_p95")
+    out["relief"] = get_numeric(row, "relief")
+    if row.get("stratum_id") not in (None, ""):
+        out["stratum_id"] = row["stratum_id"]
+    return out
+
+
+def compute_quantile_cutpoints(values: list[float], num_bins: int = 4) -> list[float]:
+    clean = sorted(v for v in values if math.isfinite(v))
+    if not clean or num_bins < 2:
+        return []
+    cutpoints: list[float] = []
+    n = len(clean)
+    for idx in range(1, num_bins):
+        rank = idx * (n - 1) / num_bins
+        lo = int(math.floor(rank))
+        hi = int(math.ceil(rank))
+        if lo == hi:
+            value = clean[lo]
+        else:
+            frac = rank - lo
+            value = clean[lo] * (1.0 - frac) + clean[hi] * frac
+        cutpoints.append(value)
+    return cutpoints
+
+
+def assign_uncertainty_bin(value: float | None, cutpoints: list[float]) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    for idx, cutpoint in enumerate(cutpoints, start=1):
+        if value <= cutpoint:
+            return f"q{idx}"
+    return f"q{len(cutpoints) + 1}"
+
+
+def assign_slope_bin(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    if value <= 2.0:
+        return "0-2"
+    if value <= 5.0:
+        return "2-5"
+    if value <= 10.0:
+        return "5-10"
+    if value <= 20.0:
+        return "10-20"
+    return ">20"
+
+
+def assign_hydrology_bin(frac_shore: float | None, frac_water: float | None, has_edge: float | None) -> str:
+    shore = frac_shore if frac_shore is not None and math.isfinite(frac_shore) else 0.0
+    water = frac_water if frac_water is not None and math.isfinite(frac_water) else 0.0
+    edge = has_edge if has_edge is not None and math.isfinite(has_edge) else 0.0
+    if shore > 0:
+        return "shore"
+    if water > 0:
+        return "water"
+    if edge > 0:
+        return "edge"
+    return "dry"
+
+
+def assign_building_bin(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    if value <= 0:
+        return "0"
+    if value <= 0.05:
+        return "0-0.05"
+    if value <= 0.25:
+        return "0.05-0.25"
+    return ">0.25"
+
+
+def build_patch_table_context(
+    patch_table: dict[str, dict[str, object]],
+    stems: list[str],
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    matched_rows = {
+        stem: canonicalize_patch_table_row(patch_table[stem]) for stem in stems if stem in patch_table
+    }
+    uncertainty_cutpoints = compute_quantile_cutpoints(
+        [float(row["mean_uncert"]) for row in matched_rows.values() if row.get("mean_uncert") is not None],
+        num_bins=4,
+    )
+    context: dict[str, dict[str, object]] = {}
+    for stem in stems:
+        row = matched_rows.get(stem, {})
+        enriched = dict(row)
+        enriched["slope_bin"] = assign_slope_bin(get_numeric(row, "p90_slope"))
+        enriched["hydrology_bin"] = assign_hydrology_bin(
+            get_numeric(row, "frac_shore"),
+            get_numeric(row, "frac_water"),
+            get_numeric(row, "has_edge"),
+        )
+        enriched["building_bin"] = assign_building_bin(get_numeric(row, "frac_building"))
+        enriched["uncertainty_bin"] = assign_uncertainty_bin(get_numeric(row, "mean_uncert"), uncertainty_cutpoints)
+        context[stem] = enriched
+    return context, {"uncertainty_cutpoints": uncertainty_cutpoints, "strata_fields": list(STRATA_FIELDS)}
+
+
+def finalize_python_metric_sums(sums: dict[str, float], n_patches: int) -> dict[str, float]:
+    sw = max(float(sums["sum_w"]), 1e-12)
+    return {
+        "n_patches": float(n_patches),
+        "sum_weights": sw,
+        "elev_bias_w": sums["sum_e"] / sw,
+        "elev_mae_w": sums["sum_abs_e"] / sw,
+        "elev_rmse_w": math.sqrt(max(sums["sum_sq_e"] / sw, 0.0)),
+        "slope_mae_w": sums["sum_abs_ds"] / sw,
+        "slope_rmse_w": math.sqrt(max(sums["sum_sq_ds"] / sw, 0.0)),
+        "slope_mae_deg_w": sums["sum_abs_ds_deg"] / sw,
+        "slope_rmse_deg_w": math.sqrt(max(sums["sum_sq_ds_deg"] / sw, 0.0)),
+    }
+
+
+def compute_stratified_metrics(
+    per_patch_rows: list[dict[str, object]],
+    prediction_sources: list[str],
+) -> dict[str, dict[str, dict[str, dict[str, float]]]]:
+    out: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for source in prediction_sources:
+        field_map: dict[str, dict[str, dict[str, float]]] = {}
+        for field in STRATA_FIELDS:
+            grouped: dict[str, dict[str, float]] = {}
+            counts: dict[str, int] = {}
+            for row in per_patch_rows:
+                group = str(row.get(field, "missing"))
+                sums = grouped.setdefault(
+                    group,
+                    {
+                        "sum_w": 0.0,
+                        "sum_e": 0.0,
+                        "sum_abs_e": 0.0,
+                        "sum_sq_e": 0.0,
+                        "sum_abs_ds": 0.0,
+                        "sum_sq_ds": 0.0,
+                        "sum_abs_ds_deg": 0.0,
+                        "sum_sq_ds_deg": 0.0,
+                    },
+                )
+                counts[group] = counts.get(group, 0) + 1
+                sum_w = float(row[f"{source}_sum_weights"])
+                sums["sum_w"] += sum_w
+                sums["sum_e"] += float(row[f"{source}_elev_bias_w"]) * sum_w
+                sums["sum_abs_e"] += float(row[f"{source}_elev_mae_w"]) * sum_w
+                sums["sum_sq_e"] += float(row[f"{source}_elev_rmse_w"]) ** 2 * sum_w
+                sums["sum_abs_ds"] += float(row[f"{source}_slope_mae_w"]) * sum_w
+                sums["sum_sq_ds"] += float(row[f"{source}_slope_rmse_w"]) ** 2 * sum_w
+                sums["sum_abs_ds_deg"] += float(row[f"{source}_slope_mae_deg_w"]) * sum_w
+                sums["sum_sq_ds_deg"] += float(row[f"{source}_slope_rmse_deg_w"]) ** 2 * sum_w
+            field_map[field] = {
+                group: finalize_python_metric_sums(sums, counts[group])
+                for group, sums in sorted(grouped.items())
+            }
+        out[source] = field_map
+    return out
 
 
 def compute_per_patch_metrics(
@@ -220,6 +422,8 @@ def run_eval(
     use_amp: bool,
     prediction_sources: list[str],
     model: torch.nn.Module | None = None,
+    blend_model: torch.nn.Module | None = None,
+    blend_weight: float = 0.25,
     collect_per_patch: bool = False,
 ) -> tuple[dict[str, dict[str, float]], list[dict[str, object]]]:
     """Aggregate weighted MAE/RMSE and optionally collect per-patch rows."""
@@ -229,6 +433,8 @@ def run_eval(
         if model is None:
             raise ValueError("model prediction source requires a loaded model")
         model.eval()
+        if blend_model is not None:
+            blend_model.eval()
 
     sums_by_source = {source: init_metric_sums(device) for source in sources}
     n_patches = 0
@@ -251,7 +457,13 @@ def run_eval(
             x_dem = batch["x_dem"].to(device, non_blocking=True)
             x_ae = batch["x_ae"].to(device, non_blocking=True)
             with torch.amp.autocast("cuda", enabled=use_cuda_amp):
-                pred_by_source["model"] = model(x_dem, x_ae, z_lr)
+                z_hat = model(x_dem, x_ae, z_lr)
+                if blend_model is not None:
+                    z_hat_blend = blend_model(x_dem, x_ae, z_lr)
+                    residual_a = z_hat - z_lr
+                    residual_b = z_hat_blend - z_lr
+                    z_hat = z_lr + (1.0 - blend_weight) * residual_a + blend_weight * residual_b
+                pred_by_source["model"] = z_hat
             weight_by_source["model"] = w
         if "z_lr" in sources:
             pred_by_source["z_lr"] = z_lr
@@ -310,6 +522,18 @@ def main() -> None:
     )
     p.add_argument("--checkpoint", type=Path, default=Path("dem_film_unet.pt"))
     p.add_argument(
+        "--blend-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional second checkpoint for residual blending with --checkpoint",
+    )
+    p.add_argument(
+        "--blend-weight",
+        type=float,
+        default=0.25,
+        help="Residual blend weight for --blend-checkpoint (default: 0.25)",
+    )
+    p.add_argument(
         "--data-root",
         default=None,
         help="Override training root (default: read from checkpoint)",
@@ -364,10 +588,28 @@ def main() -> None:
         help="Write one JSON row per patch with per-source metrics and improvement columns",
     )
     p.add_argument(
+        "--patch-table",
+        type=Path,
+        default=None,
+        help="Optional CSV/JSON/GeoJSON patch-summary table keyed by patch stem",
+    )
+    p.add_argument(
+        "--stratified-json",
+        type=Path,
+        default=None,
+        help="Optional JSON file for stratified summaries derived from --patch-table",
+    )
+    p.add_argument(
         "--arch",
         choices=ARCH_CHOICES,
         default=None,
         help="Model architecture override (default: checkpoint args.arch or film_unet)",
+    )
+    p.add_argument(
+        "--blend-arch",
+        choices=ARCH_CHOICES,
+        default=None,
+        help="Architecture override for --blend-checkpoint (default: checkpoint args.arch or film_unet)",
     )
     args = p.parse_args()
     prediction_sources = list(dict.fromkeys(args.prediction_source))
@@ -389,6 +631,12 @@ def main() -> None:
             ckpt_args = ckpt.get("args")
             if isinstance(ckpt_args, dict):
                 ckpt_arch = ckpt_args.get("arch")
+        if args.blend_checkpoint is not None and not args.blend_checkpoint.is_file():
+            log.error("Blend checkpoint not found: %s", args.blend_checkpoint)
+            sys.exit(1)
+    if not (0.0 <= args.blend_weight <= 1.0):
+        log.error("--blend-weight must be in [0, 1], got %.6f", args.blend_weight)
+        sys.exit(1)
 
     data_root = args.data_root or (
         ckpt.get("data_root") if isinstance(ckpt, dict) else None
@@ -401,6 +649,9 @@ def main() -> None:
         sys.exit(1)
     if "raster" in prediction_sources and args.candidate_root is None:
         log.error("Set --candidate-root when using --prediction-source raster.")
+        sys.exit(1)
+    if args.stratified_json is not None and args.patch_table is None:
+        log.error("Set --patch-table when using --stratified-json.")
         sys.exit(1)
 
     stems = None
@@ -475,22 +726,84 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = None
+    blend_model = None
     if "model" in prediction_sources:
         arch = args.arch or ckpt_arch or ARCH_FILM
         model = create_model(arch).to(device)
         model.load_state_dict(state, strict=True)
         log.info("Model architecture: %s", arch)
+        if args.blend_checkpoint is not None:
+            load_kw: dict = {"map_location": "cpu"}
+            try:
+                blend_ckpt = torch.load(args.blend_checkpoint, weights_only=False, **load_kw)
+            except TypeError:
+                blend_ckpt = torch.load(args.blend_checkpoint, **load_kw)
+            blend_state = (
+                blend_ckpt["model"]
+                if isinstance(blend_ckpt, dict) and "model" in blend_ckpt
+                else blend_ckpt
+            )
+            blend_ckpt_arch = None
+            if isinstance(blend_ckpt, dict):
+                blend_ckpt_args = blend_ckpt.get("args")
+                if isinstance(blend_ckpt_args, dict):
+                    blend_ckpt_arch = blend_ckpt_args.get("arch")
+            blend_arch = args.blend_arch or blend_ckpt_arch or ARCH_FILM
+            blend_model = create_model(blend_arch).to(device)
+            blend_model.load_state_dict(blend_state, strict=True)
+            log.info(
+                "Blend enabled: checkpoint=%s arch=%s weight=%.3f",
+                args.blend_checkpoint,
+                blend_arch,
+                args.blend_weight,
+            )
     log.info("Device: %s", device)
     log.info("Prediction sources: %s", ", ".join(prediction_sources))
 
+    collect_per_patch = (
+        args.per_patch_json is not None or args.patch_table is not None or args.stratified_json is not None
+    )
     metrics_by_source, per_patch_rows = run_eval(
         loader,
         device,
         use_amp=args.amp,
         prediction_sources=prediction_sources,
         model=model,
-        collect_per_patch=(args.per_patch_json is not None),
+        blend_model=blend_model,
+        blend_weight=args.blend_weight,
+        collect_per_patch=collect_per_patch,
     )
+
+    patch_table_match_summary = None
+    stratification_payload = None
+    stratified_metrics_by_source = None
+    if args.patch_table is not None:
+        eval_stems = stems if stems is not None else list_patch_stems(data_root)
+        patch_table = load_patch_table(args.patch_table, allowed_stems=set(eval_stems))
+        patch_context, stratification_payload = build_patch_table_context(
+            patch_table,
+            [str(row["stem"]) for row in per_patch_rows],
+        )
+        matched = 0
+        for row in per_patch_rows:
+            stem = str(row["stem"])
+            context = patch_context.get(stem, {})
+            if stem in patch_table:
+                matched += 1
+            for field in PATCH_TABLE_FIELDS:
+                row[field] = context.get(field)
+            for field in STRATA_FIELDS:
+                row[field] = context.get(field, "missing")
+        patch_table_match_summary = {
+            "matched_rows": matched,
+            "missing_rows": len(per_patch_rows) - matched,
+        }
+        stratified_metrics_by_source = compute_stratified_metrics(per_patch_rows, prediction_sources)
+        log.info(
+            "Patch table join matched %d/%d evaluation rows",
+            matched,
+            len(per_patch_rows),
+        )
 
     for source in prediction_sources:
         metrics = metrics_by_source[source]
@@ -508,6 +821,8 @@ def main() -> None:
     payload = {
         "prediction_source": prediction_sources,
         "checkpoint": str(args.checkpoint),
+        "blend_checkpoint": str(args.blend_checkpoint) if args.blend_checkpoint else None,
+        "blend_weight": args.blend_weight,
         "data_root": data_root,
         "manifest": str(args.manifest) if args.manifest else None,
         "list_from_root": bool(args.list_from_root),
@@ -515,7 +830,11 @@ def main() -> None:
         "candidate_product": args.candidate_product,
         "candidate_band": args.candidate_band,
         "precomputed_weight": args.precomputed_weight,
+        "patch_table": str(args.patch_table) if args.patch_table else None,
+        "patch_table_match_summary": patch_table_match_summary,
+        "stratification": stratification_payload,
         "metrics_by_source": metrics_by_source,
+        "stratified_metrics_by_source": stratified_metrics_by_source,
     }
     if len(prediction_sources) == 1:
         payload.update(metrics_by_source[prediction_sources[0]])
@@ -525,6 +844,15 @@ def main() -> None:
     if args.per_patch_json:
         args.per_patch_json.write_text(json.dumps(per_patch_rows, indent=2), encoding="utf-8")
         log.info("Wrote %s", args.per_patch_json)
+    if args.stratified_json:
+        stratified_payload = {
+            "patch_table": str(args.patch_table) if args.patch_table else None,
+            "patch_table_match_summary": patch_table_match_summary,
+            "stratification": stratification_payload,
+            "stratified_metrics_by_source": stratified_metrics_by_source,
+        }
+        args.stratified_json.write_text(json.dumps(stratified_payload, indent=2), encoding="utf-8")
+        log.info("Wrote %s", args.stratified_json)
 
 
 if __name__ == "__main__":

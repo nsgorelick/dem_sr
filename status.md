@@ -38,12 +38,13 @@ Counts from `manifest_summary_seed42.json`:
 - holdout fraction: `10%`
 - seed: `42`
 
-Note: this is a random patch-level holdout, not a strict spatial holdout.
+Note: this is a random patch-level holdout, not a strict spatial holdout, and it should no longer be treated as the final evaluation protocol.
 
-Additional data now available for future evaluation planning:
+Australia evaluation protocol now supported:
 
-- approximately `50,000` more Australia patches are available
-- plan is to reserve these for the "real" holdout once the model pipeline is working well enough to justify a stronger final evaluation
+- a patch-summary table from Earth Engine can now drive a **locked** country-specific final test manifest
+- the intended use is to reserve the Australia patches as the final test set and keep them out of model selection
+- development manifests should come from the remaining pool outside the locked Australia set
 
 ## Code Changes Made
 
@@ -110,6 +111,24 @@ Current behavior:
 
 - Tracks architecture exploration runs (screening protocol, example train/eval commands, TODO list) without changing training data or chip size.
 
+### `make_manifest.py`
+
+Current behavior:
+
+- keeps the old random split mode for simple local manifest generation
+- now also supports a table-driven mode via a patch-summary CSV / JSON / GeoJSON
+- `--patch-table` + `--locked-country AU` can generate:
+  - a locked final-test manifest from eligible Australia rows
+  - a development-train manifest from the remaining local pool
+  - an optional development-val manifest via `--val-out`
+- locked final-test eligibility is filtered by patch-table quality fields:
+  - `mean_W` / `weight_mean`
+  - `valid_frac` / `weight_valid_mean`
+  - `gt_coverage_mean`
+  - `relief`
+  - `frac_water`
+- summary JSON now records the locked-country pool, filtered final test, and development pool separately when table-driven mode is used
+
 ### `eval_dem.py`
 
 Current behavior:
@@ -131,10 +150,30 @@ Current behavior:
   - slope MAE in degrees
   - slope RMSE in degrees
 - optional per-patch JSON output via `--per-patch-json`
+- optional patch-table join via `--patch-table`
+- optional stratified summary JSON via `--stratified-json`
 - computes per-patch customer-example fields including:
   - model vs `z_lr` deltas / percentage improvements
   - model vs FABDEM deltas / percentage improvements
   - `customer_example_score` for ranking
+- when a patch-summary table is supplied, per-patch rows can now be enriched with canonical table fields:
+  - `p90_slope`
+  - `frac_shore`
+  - `frac_water`
+  - `has_edge`
+  - `frac_building`
+  - `mean_uncert`
+  - `mean_W`
+  - `valid_frac`
+  - `gt_coverage_mean`
+  - `resid_scale`
+  - `relief`
+  - `stratum_id`
+- first-pass Australia stratified summaries are now available for:
+  - `slope_bin`
+  - `hydrology_bin`
+  - `building_bin`
+  - `uncertainty_bin`
 - when `--prediction-source raster` is used, checks candidate raster availability on disk up front and skips stems that do not have the requested candidate file present
 
 Important: when evaluating `raster`, invalid or masked pixels in the external raster are excluded from the weighted metrics for that source.
@@ -514,6 +553,35 @@ Interpretation:
 - simple rot/flip augmentation improved elevation MAE but hurt slope-sensitive metrics and slightly hurt elevation RMSE on the full holdout
 - this run is useful evidence, but it does not replace the current best checkpoint for overall multi-metric performance
 
+## Architecture Screening Update (6-epoch holdout)
+
+Short-run screening checkpoints now exist for:
+
+- `dem_film_unet_arch_gated_6ep.pt`
+- `dem_film_unet_arch_xattn_6ep.pt`
+- `dem_film_unet_arch_hybrid_tf_6ep.pt`
+- `dem_film_unet_arch_rcan_ae_6ep.pt`
+
+Holdout eval highlights (`holdout_manifest_seed42.txt`):
+
+- best single-model elevation metrics among screened variants: `xattn_unet`
+  - elevation MAE: `1.2911 m`
+  - elevation RMSE: `3.1849 m`
+- best screened slope metrics (single model): baseline-like FiLM behavior remains stronger than pure xattn on slope
+- `rcan_ae_unet` instability issue (NaNs) was resolved for the 6-epoch run and final eval now produces finite metrics
+
+New no-retrain blend finding (inference-time residual ensemble):
+
+- blending `dem_film_unet.pt` with `dem_film_unet_arch_xattn_6ep.pt` improved over prior single-model results
+- tested residual blend weights `w` where:
+  - `z_hat = z_lr + (1 - w) * r_film + w * r_xattn`
+- practical default/balanced pick: `w=0.25`
+  - elev MAE: `1.2947`
+  - elev RMSE: `3.1610`
+  - slope MAE deg: `1.4075`
+  - slope RMSE deg: `2.9631`
+- elevation-first pick: `w=0.60` (best MAE/RMSE elevation, weaker slope than `w=0.25`)
+
 ## Current File Outputs
 
 Known outputs in repo:
@@ -529,6 +597,14 @@ Known outputs in repo:
 - `eval_holdout_model_zlr_fabdem_aug15.json`
 - `eval_holdout_model_zlr_fabdem_per_patch.json`
 - `smoke_eval_seed42.json`
+- `eval_arch_gated.json`
+- `eval_arch_xattn.json`
+- `eval_arch_hybrid_tf.json`
+- `eval_arch_rcan_ae.json`
+- `eval_arch_gated_epoch003.json`
+- `eval_arch_xattn_epoch003.json`
+- `eval_arch_hybrid_tf_epoch003.json`
+- `eval_arch_rcan_ae_epoch003.json`
 - `customer_example_chips_manifest.txt`
 - `customer_example_added10_manifest.txt`
 - `customer_example_predictions/tifs`
@@ -537,25 +613,26 @@ Known outputs in repo:
 
 ## Recommended Next Steps
 
-1. Screen alternative architectures (`gated_unet` and later candidates) with short runs and holdout `eval_dem.py`; use `--resume` to continue after worker or environment tweaks.
+1. Add a small helper command/script for paired training of blend components (`film_unet` + `xattn_unet`) so inference-time blending is reproducible.
 2. Check Earth Engine task completion for the customer-example asset submissions and verify that all selected chips are available in `users/ngorelick/DTM/tmp/customer_example_predictions`.
-3. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
-4. Run the same augmented training recipe with a small validation split (or equivalent holdout checkpoint sweep) so augmentation effects can be selected by validation/holdout metrics rather than train loss alone.
-5. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
-6. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
-7. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
+3. Decide a primary blend operating point (`w=0.25` balanced vs `w=0.60` elevation-first), then lock it into evaluation/reporting defaults.
+4. Run full-holdout evaluation for a few key checkpoints such as epochs `3`, `10`, and `15` to confirm whether early stopping is justified.
+5. Run the same augmented training recipe with a small validation split (or equivalent holdout checkpoint sweep) so augmentation effects can be selected by validation/holdout metrics rather than train loss alone.
+6. Add or run per-zone / per-country summaries for corrected FABDEM and the model so we can see where gains are concentrated.
+7. Evaluate the current `tdem_edem` product as a clean comparison baseline now that the earlier bias-offset issue is no longer the active blocker.
+8. Once the model pipeline is behaving well, reserve the additional ~`50,000` Australia patches as the "real" holdout and use that set for the stronger final evaluation.
 
 ## Notes For Next Chat
 
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
-- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` when loading checkpoints
+- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` and now optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
 - `plan.md` tracks architecture experiments and example commands
 - the FABDEM benchmark was fixed by correcting a half-patch grid offset in the comparison exporter
 - corrected FABDEM is now a credible baseline and is better than `z_lr` on most holdout metrics, but still worse than the model
 - checkpoint analysis suggests training flattens fairly early, around epochs `3-6`
 - new training checkpoints now store train/val loss curves
-- `eval_dem.py` already supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection
+- `eval_dem.py` already supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection, and now supports inference-time model blending with default `--blend-weight 0.25`
 - `export_comparison_dtms.py` already exports separate per-product patch rasters from Earth Engine
 - the current customer-example package includes a `23`-chip manifest, local prediction TIFFs, local panel PNGs, and EE uploads for the selected examples
