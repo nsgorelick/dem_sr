@@ -19,7 +19,6 @@ import rasterio
 from rasterio.io import MemoryFile
 
 from adaptive_export_runner import AdaptiveThreadExportRunner
-from elvis_au import elvis_au_image_ensure_year
 from export_progress import ExportProgressLine
 
 # ---------------------------------------------------------------------------
@@ -235,21 +234,20 @@ def makeCollectionJP(year, zone):
 
 def makeCollectionAU(year, zone):
     """Return Australia HR collection for a year and zone."""
-    zone = makeUTMZone(zone)
+    # Combine all the collections using a binary merge and return a collection of images for year + UTMzoneNumber
+    date = ee.Date.fromYMD(year, 1, 1)
     cs = (
         ee.ImageCollection("AU/ELVIS/ELVIS_5m")
         .merge(ee.ImageCollection("AU/ELVIS/ELVIS_2m"))
         .merge(ee.ImageCollection("AU/ELVIS/ELVIS_1m")
-          .filter(ee.Filter.stringContains(
-              "system:index", 
-              "UpperNamoiNorth202304_BATCH_ELVIS_1m_PROJCSGDA2_103").not())
+                  .filter(ee.Filter.stringContains(
+              "system:index",
+              "UpperNamoiNorth202304_BATCH_ELVIS_1m_PROJCSGDA2_103").Not()))
         .select([0], ["elevation"])
         .cast({"elevation": "float"}, ["elevation"])
-        .map(elvis_au_image_ensure_year)
-        .filter(ee.Filter.eq("year", int(year)))
-        .filterBounds(zone)
     )
-    return ee.ImageCollection(cs)
+    collection = cs.filterDate(date, date.advance(1, "year")).filterBounds(makeUTMZone(zone))
+    return ee.ImageCollection(collection)
 
 
 def makeCollectionNordic(year, zone):
@@ -457,9 +455,11 @@ def makeStack(country, year, zone):
 def grid_128x128_snap10m(x, y, scale_m=10, size=128, coarse_m=1280):
     """Pixel grid for Earth Engine getPixels: *size*×*size* at ``scale_m`` in UTM meters.
 
-    ``x`` and ``y`` are the southwest patch-corner coordinates on the UTM grid with
-    spacing ``coarse_m`` (e.g. 1280 m cells). The returned grid is exactly one
-    physical coarse cell wide/tall, anchored at ``(x * coarse_m, y * coarse_m)``.
+    ``x`` and ``y`` are the patch coordinates on the UTM grid with spacing ``coarse_m``
+    (e.g. 1280 m cells): UTM easting/northing of the patch center are
+    ``x * coarse_m`` and ``y * coarse_m``. The returned grid is exactly one physical
+    coarse cell wide/tall (``coarse_m`` meters), with that center in the middle of
+    the window at resolution ``scale_m``.
 
     Returns ``dimensions`` and ``affineTransform`` for the REST ``grid`` object;
     the caller should set ``crsCode`` from the zone’s UTM EPSG code.
@@ -467,8 +467,11 @@ def grid_128x128_snap10m(x, y, scale_m=10, size=128, coarse_m=1280):
     Affine uses scaleY = -scale_m and translateY = top (north edge), matching EE
     getPixels examples.
     """
-    left = float(x) * coarse_m
-    top = float(y + 1) * coarse_m
+    half = scale_m * size / 2.0
+    center_e = float(x) * coarse_m
+    center_n = float(y) * coarse_m
+    left = center_e - half
+    top = center_n + half
 
     return {
         "dimensions": {"width": size, "height": size},
@@ -534,8 +537,6 @@ def fetch_patch_items(collection_ids: Sequence[str]) -> list[dict]:
     for collection_path in collection_ids:
         fc = (
             ee.FeatureCollection(collection_path)
-            # Only downloading the AU patches now.
-            .filter(ee.Filter.equals("country", "AU"))
             .filter(
                 ee.Filter.And(
                     ee.Filter.gte("year", SATELLITE_EMBEDDING_MIN_YEAR),
@@ -612,7 +613,7 @@ def export_one_patch(item: dict) -> dict:
 
 def run_export(pool_workers: int | None = None) -> None:
     collection_ids = [
-        # "users/ngorelick/DTM/tmp/sample_us_100k",
+        "users/ngorelick/DTM/tmp/sample_us_100k",
         "users/ngorelick/DTM/tmp/sample_100k"
     ]
     items = fetch_patch_items(collection_ids)
