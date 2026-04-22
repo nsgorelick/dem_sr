@@ -24,6 +24,10 @@ set -euo pipefail
 #   ARCH=film_unet
 #   CONTOUR_INTERVAL=10.0
 #   PRESETS="baseline geom multitask contour"
+#   USE_EXPERIMENT_ENTRYPOINT=0      (set 1 to use train_experiment.py/eval_experiment.py)
+#   TRAIN_PRESET=baseline            (train_experiment.py --preset value)
+#   EVAL_PRESET=baseline             (eval_experiment.py --preset value)
+#   LOSS_SYSTEM=preset               (preset | composite; used only with experiment entrypoint)
 #   HARD_FRACTION=0.10             (set to 1.0 to use the full non-AU train manifest)
 #   VAL_HARD_FRACTION=0.10         (set to 1.0 to use the full AU val manifest)
 #   HARD_SCORE_FIELD=resid_scale   (p90_slope | relief | mean_uncert also work)
@@ -45,6 +49,10 @@ USE_AMP="${USE_AMP:-1}"
 ARCH="${ARCH:-film_unet}"
 CONTOUR_INTERVAL="${CONTOUR_INTERVAL:-10.0}"
 PRESETS="${PRESETS:-baseline geom multitask contour}"
+USE_EXPERIMENT_ENTRYPOINT="${USE_EXPERIMENT_ENTRYPOINT:-0}"
+TRAIN_PRESET="${TRAIN_PRESET:-baseline}"
+EVAL_PRESET="${EVAL_PRESET:-baseline}"
+LOSS_SYSTEM="${LOSS_SYSTEM:-preset}"
 HARD_FRACTION="${HARD_FRACTION:-0.10}"
 VAL_HARD_FRACTION="${VAL_HARD_FRACTION:-0.10}"
 HARD_SCORE_FIELD="${HARD_SCORE_FIELD:-resid_scale}"
@@ -155,6 +163,9 @@ if [[ "${USE_AMP}" == "1" ]]; then
 fi
 
 echo "==> Evaluating z_lr baseline on AU validation"
+if [[ "${USE_EXPERIMENT_ENTRYPOINT}" == "1" ]]; then
+  echo "NOTE: z_lr-only baseline is not currently exposed via eval_experiment.py; using eval_dem.py for z_lr."
+fi
 python3 eval_dem.py \
   --prediction-source z_lr \
   --data-root "${DATA_ROOT}" \
@@ -168,30 +179,60 @@ for PRESET in ${PRESETS}; do
   CKPT_PATH="${CKPT_DIR}/dem_${ARCH}_${PRESET}_${EPOCHS}ep.pt"
   PRESET_EVAL_JSON="${EVAL_DIR}/eval_${ARCH}_${PRESET}.json"
 
-  echo "==> Training ${ARCH} loss-preset=${PRESET} (${EPOCHS} epochs, batch=${BATCH_SIZE}, workers=${WORKERS})"
-  python3 train_dem.py \
-    --arch "${ARCH}" \
-    --loss-preset "${PRESET}" \
-    --contour-interval "${CONTOUR_INTERVAL}" \
-    --data-root "${DATA_ROOT}" \
-    --manifest "${TRAIN_MANIFEST}" \
-    --epochs "${EPOCHS}" \
-    --batch-size "${BATCH_SIZE}" \
-    --workers "${WORKERS}" \
-    "${AMP_FLAG[@]}" \
-    --checkpoint-out "${CKPT_PATH}"
+  if [[ "${USE_EXPERIMENT_ENTRYPOINT}" == "1" ]]; then
+    echo "==> Training experiment baseline (preset=${TRAIN_PRESET}, loss-system=${LOSS_SYSTEM}, loss-preset=${PRESET})"
+    python3 train_experiment.py \
+      --experiment baseline \
+      --preset "${TRAIN_PRESET}" \
+      --loss-system "${LOSS_SYSTEM}" \
+      --arch "${ARCH}" \
+      --loss-preset "${PRESET}" \
+      --contour-interval "${CONTOUR_INTERVAL}" \
+      --data-root "${DATA_ROOT}" \
+      --manifest "${TRAIN_MANIFEST}" \
+      --epochs "${EPOCHS}" \
+      --batch-size "${BATCH_SIZE}" \
+      --workers "${WORKERS}" \
+      "${AMP_FLAG[@]}" \
+      --checkpoint-out "${CKPT_PATH}"
 
-  echo "==> Evaluating ${ARCH}/${PRESET} on AU validation"
-  python3 eval_dem.py \
-    --prediction-source model \
-    --arch "${ARCH}" \
-    --checkpoint "${CKPT_PATH}" \
-    --manifest "${VAL_MANIFEST}" \
-    --batch-size "${BATCH_SIZE}" \
-    --workers "${WORKERS}" \
-    --contour-interval "${CONTOUR_INTERVAL}" \
-    "${AMP_FLAG[@]}" \
-    --output-json "${PRESET_EVAL_JSON}"
+    echo "==> Evaluating experiment baseline on AU validation (preset=${EVAL_PRESET})"
+    python3 eval_experiment.py \
+      --experiment baseline \
+      --preset "${EVAL_PRESET}" \
+      --checkpoint "${CKPT_PATH}" \
+      --manifest "${VAL_MANIFEST}" \
+      --batch-size "${BATCH_SIZE}" \
+      --workers "${WORKERS}" \
+      --contour-interval "${CONTOUR_INTERVAL}" \
+      "${AMP_FLAG[@]}" \
+      --output-json "${PRESET_EVAL_JSON}"
+  else
+    echo "==> Training ${ARCH} loss-preset=${PRESET} (${EPOCHS} epochs, batch=${BATCH_SIZE}, workers=${WORKERS})"
+    python3 train_dem.py \
+      --arch "${ARCH}" \
+      --loss-preset "${PRESET}" \
+      --contour-interval "${CONTOUR_INTERVAL}" \
+      --data-root "${DATA_ROOT}" \
+      --manifest "${TRAIN_MANIFEST}" \
+      --epochs "${EPOCHS}" \
+      --batch-size "${BATCH_SIZE}" \
+      --workers "${WORKERS}" \
+      "${AMP_FLAG[@]}" \
+      --checkpoint-out "${CKPT_PATH}"
+
+    echo "==> Evaluating ${ARCH}/${PRESET} on AU validation"
+    python3 eval_dem.py \
+      --prediction-source model \
+      --arch "${ARCH}" \
+      --checkpoint "${CKPT_PATH}" \
+      --manifest "${VAL_MANIFEST}" \
+      --batch-size "${BATCH_SIZE}" \
+      --workers "${WORKERS}" \
+      --contour-interval "${CONTOUR_INTERVAL}" \
+      "${AMP_FLAG[@]}" \
+      --output-json "${PRESET_EVAL_JSON}"
+  fi
 done
 
 echo "==> Run complete"

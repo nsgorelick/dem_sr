@@ -8,6 +8,7 @@ __pycache__/
 *.json
 comparison/
 tdem_ingest/
+runs/
 
 # Local scratch and logs
 *.log

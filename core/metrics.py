@@ -252,6 +252,132 @@ def parse_patch_stem(stem: str) -> dict[str, int | str] | None:
         return None
 
 
+def get_numeric(row: dict[str, object], *keys: str) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def canonicalize_patch_table_row(row: dict[str, object]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    out["p90_slope"] = get_numeric(row, "p90_slope", "slope_p90")
+    out["frac_shore"] = get_numeric(row, "frac_shore", "shore_mean")
+    out["frac_water"] = get_numeric(row, "frac_water", "water_mean")
+    out["has_edge"] = get_numeric(row, "has_edge")
+    out["frac_building"] = get_numeric(row, "frac_building", "bld_mean")
+    out["mean_uncert"] = get_numeric(row, "mean_uncert", "U_lr10_mean")
+    out["mean_W"] = get_numeric(row, "mean_W", "weight_mean")
+    out["valid_frac"] = get_numeric(row, "valid_frac", "weight_valid_mean")
+    out["gt_coverage_mean"] = get_numeric(row, "gt_coverage_mean")
+    out["resid_scale"] = get_numeric(row, "resid_scale", "residAbs_p95")
+    out["relief"] = get_numeric(row, "relief")
+    if row.get("stratum_id") not in (None, ""):
+        out["stratum_id"] = row["stratum_id"]
+    return out
+
+
+def compute_quantile_cutpoints(values: list[float], num_bins: int = 4) -> list[float]:
+    clean = sorted(v for v in values if math.isfinite(v))
+    if not clean or num_bins < 2:
+        return []
+    cutpoints: list[float] = []
+    n = len(clean)
+    for idx in range(1, num_bins):
+        rank = idx * (n - 1) / num_bins
+        lo = int(math.floor(rank))
+        hi = int(math.ceil(rank))
+        if lo == hi:
+            value = clean[lo]
+        else:
+            frac = rank - lo
+            value = clean[lo] * (1.0 - frac) + clean[hi] * frac
+        cutpoints.append(value)
+    return cutpoints
+
+
+def assign_uncertainty_bin(value: float | None, cutpoints: list[float]) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    for idx, cutpoint in enumerate(cutpoints, start=1):
+        if value <= cutpoint:
+            return f"q{idx}"
+    return f"q{len(cutpoints) + 1}"
+
+
+def assign_slope_bin(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    if value <= 2.0:
+        return "0-2"
+    if value <= 5.0:
+        return "2-5"
+    if value <= 10.0:
+        return "5-10"
+    if value <= 20.0:
+        return "10-20"
+    return ">20"
+
+
+def assign_hydrology_bin(frac_shore: float | None, frac_water: float | None, has_edge: float | None) -> str:
+    shore = frac_shore if frac_shore is not None and math.isfinite(frac_shore) else 0.0
+    water = frac_water if frac_water is not None and math.isfinite(frac_water) else 0.0
+    edge = has_edge if has_edge is not None and math.isfinite(has_edge) else 0.0
+    if shore > 0:
+        return "shore"
+    if water > 0:
+        return "water"
+    if edge > 0:
+        return "edge"
+    return "dry"
+
+
+def assign_building_bin(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "missing"
+    if value <= 0:
+        return "0"
+    if value <= 0.05:
+        return "0-0.05"
+    if value <= 0.25:
+        return "0.05-0.25"
+    return ">0.25"
+
+
+def build_patch_table_context(
+    patch_table: dict[str, dict[str, object]],
+    stems: list[str],
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    matched_rows = {
+        stem: canonicalize_patch_table_row(patch_table[stem]) for stem in stems if stem in patch_table
+    }
+    uncertainty_cutpoints = compute_quantile_cutpoints(
+        [float(row["mean_uncert"]) for row in matched_rows.values() if row.get("mean_uncert") is not None],
+        num_bins=4,
+    )
+    context: dict[str, dict[str, object]] = {}
+    for stem in stems:
+        row = matched_rows.get(stem, {})
+        enriched = dict(row)
+        enriched["slope_bin"] = assign_slope_bin(get_numeric(row, "p90_slope"))
+        enriched["hydrology_bin"] = assign_hydrology_bin(
+            get_numeric(row, "frac_shore"),
+            get_numeric(row, "frac_water"),
+            get_numeric(row, "has_edge"),
+        )
+        enriched["building_bin"] = assign_building_bin(get_numeric(row, "frac_building"))
+        enriched["uncertainty_bin"] = assign_uncertainty_bin(get_numeric(row, "mean_uncert"), uncertainty_cutpoints)
+        context[stem] = enriched
+    return context, {"uncertainty_cutpoints": uncertainty_cutpoints, "strata_fields": list(STRATA_FIELDS)}
+
+
 def pct_improvement(baseline: float, improved: float) -> float:
     denom = max(abs(baseline), 1e-12)
     return 100.0 * (baseline - improved) / denom
