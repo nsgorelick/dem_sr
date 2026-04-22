@@ -19,7 +19,17 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from dem_film_unet import ARCH_CHOICES, ARCH_FILM, create_model, slope_to_degrees, terrain_slope
+from dem_film_unet import (
+    ARCH_CHOICES,
+    ARCH_FILM,
+    DEFAULT_CONTOUR_INTERVAL_M,
+    contour_sdf,
+    create_model,
+    slope_to_degrees,
+    terrain_grad,
+    terrain_laplacian,
+    terrain_slope,
+)
 from local_patch_dataset import (
     LocalDemPatchDataset,
     collate_dem_batch,
@@ -52,22 +62,45 @@ PATCH_TABLE_FIELDS = (
 STRATA_FIELDS = ("slope_bin", "hydrology_bin", "building_bin", "uncertainty_bin")
 
 
+_EVAL_CONTOUR_INTERVAL_M: float = DEFAULT_CONTOUR_INTERVAL_M
+
+
+def set_eval_contour_interval(interval_m: float) -> None:
+    """Override the contour interval used by geometry/contour metrics."""
+    global _EVAL_CONTOUR_INTERVAL_M
+    _EVAL_CONTOUR_INTERVAL_M = float(interval_m)
+
+
 def update_metric_sums(
     pred: torch.Tensor,
     z_gt: torch.Tensor,
     w: torch.Tensor,
     sums: dict[str, torch.Tensor],
 ) -> None:
-    """Accumulate weighted elevation and slope errors for a prediction tensor."""
-    s_pred = terrain_slope(pred.float())
-    s_gt = terrain_slope(z_gt.float())
+    """Accumulate weighted elevation, slope, gradient, curvature, and SDF errors."""
+    pred_f = pred.float()
+    z_gt_f = z_gt.float()
+
+    s_pred = terrain_slope(pred_f)
+    s_gt = terrain_slope(z_gt_f)
     s_pred_deg = slope_to_degrees(s_pred)
     s_gt_deg = slope_to_degrees(s_gt)
+
+    gx_pred, gy_pred = terrain_grad(pred_f)
+    gx_gt, gy_gt = terrain_grad(z_gt_f)
+    lap_pred = terrain_laplacian(pred_f)
+    lap_gt = terrain_laplacian(z_gt_f)
+    sdf_pred = contour_sdf(pred_f, _EVAL_CONTOUR_INTERVAL_M)
+    sdf_gt = contour_sdf(z_gt_f, _EVAL_CONTOUR_INTERVAL_M)
 
     w64 = w.double()
     e = (pred.double() - z_gt.double()).squeeze(1)
     ds = (s_pred.double() - s_gt.double()).squeeze(1)
     ds_deg = (s_pred_deg.double() - s_gt_deg.double()).squeeze(1)
+    dgx = (gx_pred.double() - gx_gt.double()).squeeze(1)
+    dgy = (gy_pred.double() - gy_gt.double()).squeeze(1)
+    dlap = (lap_pred.double() - lap_gt.double()).squeeze(1)
+    dsdf = (sdf_pred.double() - sdf_gt.double()).squeeze(1)
     if w64.shape[1] == 1:
         w64 = w64.squeeze(1)
 
@@ -79,19 +112,40 @@ def update_metric_sums(
     sums["sum_sq_ds"] = sums["sum_sq_ds"] + (ds * ds * w64).sum()
     sums["sum_abs_ds_deg"] = sums["sum_abs_ds_deg"] + (ds_deg.abs() * w64).sum()
     sums["sum_sq_ds_deg"] = sums["sum_sq_ds_deg"] + (ds_deg * ds_deg * w64).sum()
+    sums["sum_abs_dgx"] = sums["sum_abs_dgx"] + (dgx.abs() * w64).sum()
+    sums["sum_sq_dgx"] = sums["sum_sq_dgx"] + (dgx * dgx * w64).sum()
+    sums["sum_abs_dgy"] = sums["sum_abs_dgy"] + (dgy.abs() * w64).sum()
+    sums["sum_sq_dgy"] = sums["sum_sq_dgy"] + (dgy * dgy * w64).sum()
+    sums["sum_abs_dlap"] = sums["sum_abs_dlap"] + (dlap.abs() * w64).sum()
+    sums["sum_sq_dlap"] = sums["sum_sq_dlap"] + (dlap * dlap * w64).sum()
+    sums["sum_abs_dsdf"] = sums["sum_abs_dsdf"] + (dsdf.abs() * w64).sum()
+    sums["sum_sq_dsdf"] = sums["sum_sq_dsdf"] + (dsdf * dsdf * w64).sum()
+
+
+_METRIC_SUM_KEYS: tuple[str, ...] = (
+    "sum_w",
+    "sum_e",
+    "sum_abs_e",
+    "sum_sq_e",
+    "sum_abs_ds",
+    "sum_sq_ds",
+    "sum_abs_ds_deg",
+    "sum_sq_ds_deg",
+    "sum_abs_dgx",
+    "sum_sq_dgx",
+    "sum_abs_dgy",
+    "sum_sq_dgy",
+    "sum_abs_dlap",
+    "sum_sq_dlap",
+    "sum_abs_dsdf",
+    "sum_sq_dsdf",
+)
 
 
 def init_metric_sums(device: torch.device) -> dict[str, torch.Tensor]:
     """Allocate accumulator tensors for one prediction source."""
     return {
-        "sum_w": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_e": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_abs_e": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_sq_e": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_abs_ds": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_sq_ds": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_abs_ds_deg": torch.zeros((), device=device, dtype=torch.float64),
-        "sum_sq_ds_deg": torch.zeros((), device=device, dtype=torch.float64),
+        key: torch.zeros((), device=device, dtype=torch.float64) for key in _METRIC_SUM_KEYS
     }
 
 
@@ -108,6 +162,15 @@ def finalize_metric_sums(sums: dict[str, torch.Tensor], n_patches: int) -> dict[
         "slope_rmse_w": float(torch.sqrt(sums["sum_sq_ds"] / sw)),
         "slope_mae_deg_w": float(sums["sum_abs_ds_deg"] / sw),
         "slope_rmse_deg_w": float(torch.sqrt(sums["sum_sq_ds_deg"] / sw)),
+        "grad_x_mae_w": float(sums["sum_abs_dgx"] / sw),
+        "grad_x_rmse_w": float(torch.sqrt(sums["sum_sq_dgx"] / sw)),
+        "grad_y_mae_w": float(sums["sum_abs_dgy"] / sw),
+        "grad_y_rmse_w": float(torch.sqrt(sums["sum_sq_dgy"] / sw)),
+        "laplacian_mae_w": float(sums["sum_abs_dlap"] / sw),
+        "laplacian_rmse_w": float(torch.sqrt(sums["sum_sq_dlap"] / sw)),
+        "sdf_mae_w": float(sums["sum_abs_dsdf"] / sw),
+        "sdf_rmse_w": float(torch.sqrt(sums["sum_sq_dsdf"] / sw)),
+        "contour_interval_m": float(_EVAL_CONTOUR_INTERVAL_M),
     }
 
 
@@ -267,7 +330,43 @@ def finalize_python_metric_sums(sums: dict[str, float], n_patches: int) -> dict[
         "slope_rmse_w": math.sqrt(max(sums["sum_sq_ds"] / sw, 0.0)),
         "slope_mae_deg_w": sums["sum_abs_ds_deg"] / sw,
         "slope_rmse_deg_w": math.sqrt(max(sums["sum_sq_ds_deg"] / sw, 0.0)),
+        "grad_x_mae_w": sums.get("sum_abs_dgx", 0.0) / sw,
+        "grad_x_rmse_w": math.sqrt(max(sums.get("sum_sq_dgx", 0.0) / sw, 0.0)),
+        "grad_y_mae_w": sums.get("sum_abs_dgy", 0.0) / sw,
+        "grad_y_rmse_w": math.sqrt(max(sums.get("sum_sq_dgy", 0.0) / sw, 0.0)),
+        "laplacian_mae_w": sums.get("sum_abs_dlap", 0.0) / sw,
+        "laplacian_rmse_w": math.sqrt(max(sums.get("sum_sq_dlap", 0.0) / sw, 0.0)),
+        "sdf_mae_w": sums.get("sum_abs_dsdf", 0.0) / sw,
+        "sdf_rmse_w": math.sqrt(max(sums.get("sum_sq_dsdf", 0.0) / sw, 0.0)),
     }
+
+
+_STRATA_SUM_KEYS: tuple[str, ...] = (
+    "sum_w",
+    "sum_e",
+    "sum_abs_e",
+    "sum_sq_e",
+    "sum_abs_ds",
+    "sum_sq_ds",
+    "sum_abs_ds_deg",
+    "sum_sq_ds_deg",
+    "sum_abs_dgx",
+    "sum_sq_dgx",
+    "sum_abs_dgy",
+    "sum_sq_dgy",
+    "sum_abs_dlap",
+    "sum_sq_dlap",
+    "sum_abs_dsdf",
+    "sum_sq_dsdf",
+)
+
+
+def _row_value(row: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = row.get(key, default)
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def compute_stratified_metrics(
@@ -284,16 +383,7 @@ def compute_stratified_metrics(
                 group = str(row.get(field, "missing"))
                 sums = grouped.setdefault(
                     group,
-                    {
-                        "sum_w": 0.0,
-                        "sum_e": 0.0,
-                        "sum_abs_e": 0.0,
-                        "sum_sq_e": 0.0,
-                        "sum_abs_ds": 0.0,
-                        "sum_sq_ds": 0.0,
-                        "sum_abs_ds_deg": 0.0,
-                        "sum_sq_ds_deg": 0.0,
-                    },
+                    {key: 0.0 for key in _STRATA_SUM_KEYS},
                 )
                 counts[group] = counts.get(group, 0) + 1
                 sum_w = float(row[f"{source}_sum_weights"])
@@ -305,6 +395,14 @@ def compute_stratified_metrics(
                 sums["sum_sq_ds"] += float(row[f"{source}_slope_rmse_w"]) ** 2 * sum_w
                 sums["sum_abs_ds_deg"] += float(row[f"{source}_slope_mae_deg_w"]) * sum_w
                 sums["sum_sq_ds_deg"] += float(row[f"{source}_slope_rmse_deg_w"]) ** 2 * sum_w
+                sums["sum_abs_dgx"] += _row_value(row, f"{source}_grad_x_mae_w") * sum_w
+                sums["sum_sq_dgx"] += _row_value(row, f"{source}_grad_x_rmse_w") ** 2 * sum_w
+                sums["sum_abs_dgy"] += _row_value(row, f"{source}_grad_y_mae_w") * sum_w
+                sums["sum_sq_dgy"] += _row_value(row, f"{source}_grad_y_rmse_w") ** 2 * sum_w
+                sums["sum_abs_dlap"] += _row_value(row, f"{source}_laplacian_mae_w") * sum_w
+                sums["sum_sq_dlap"] += _row_value(row, f"{source}_laplacian_rmse_w") ** 2 * sum_w
+                sums["sum_abs_dsdf"] += _row_value(row, f"{source}_sdf_mae_w") * sum_w
+                sums["sum_sq_dsdf"] += _row_value(row, f"{source}_sdf_rmse_w") ** 2 * sum_w
             field_map[field] = {
                 group: finalize_python_metric_sums(sums, counts[group])
                 for group, sums in sorted(grouped.items())
@@ -319,15 +417,29 @@ def compute_per_patch_metrics(
     w: torch.Tensor,
 ) -> dict[str, list[float]]:
     """Return weighted metrics for each patch in the batch."""
-    s_pred = terrain_slope(pred.float())
-    s_gt = terrain_slope(z_gt.float())
+    pred_f = pred.float()
+    z_gt_f = z_gt.float()
+
+    s_pred = terrain_slope(pred_f)
+    s_gt = terrain_slope(z_gt_f)
     s_pred_deg = slope_to_degrees(s_pred)
     s_gt_deg = slope_to_degrees(s_gt)
+
+    gx_pred, gy_pred = terrain_grad(pred_f)
+    gx_gt, gy_gt = terrain_grad(z_gt_f)
+    lap_pred = terrain_laplacian(pred_f)
+    lap_gt = terrain_laplacian(z_gt_f)
+    sdf_pred = contour_sdf(pred_f, _EVAL_CONTOUR_INTERVAL_M)
+    sdf_gt = contour_sdf(z_gt_f, _EVAL_CONTOUR_INTERVAL_M)
 
     w64 = w.double()
     e = (pred.double() - z_gt.double()).squeeze(1)
     ds = (s_pred.double() - s_gt.double()).squeeze(1)
     ds_deg = (s_pred_deg.double() - s_gt_deg.double()).squeeze(1)
+    dgx = (gx_pred.double() - gx_gt.double()).squeeze(1)
+    dgy = (gy_pred.double() - gy_gt.double()).squeeze(1)
+    dlap = (lap_pred.double() - lap_gt.double()).squeeze(1)
+    dsdf = (sdf_pred.double() - sdf_gt.double()).squeeze(1)
     if w64.shape[1] == 1:
         w64 = w64.squeeze(1)
 
@@ -345,6 +457,14 @@ def compute_per_patch_metrics(
         "slope_rmse_w": torch.sqrt(weighted_mean(ds * ds)).tolist(),
         "slope_mae_deg_w": weighted_mean(ds_deg.abs()).tolist(),
         "slope_rmse_deg_w": torch.sqrt(weighted_mean(ds_deg * ds_deg)).tolist(),
+        "grad_x_mae_w": weighted_mean(dgx.abs()).tolist(),
+        "grad_x_rmse_w": torch.sqrt(weighted_mean(dgx * dgx)).tolist(),
+        "grad_y_mae_w": weighted_mean(dgy.abs()).tolist(),
+        "grad_y_rmse_w": torch.sqrt(weighted_mean(dgy * dgy)).tolist(),
+        "laplacian_mae_w": weighted_mean(dlap.abs()).tolist(),
+        "laplacian_rmse_w": torch.sqrt(weighted_mean(dlap * dlap)).tolist(),
+        "sdf_mae_w": weighted_mean(dsdf.abs()).tolist(),
+        "sdf_rmse_w": torch.sqrt(weighted_mean(dsdf * dsdf)).tolist(),
     }
 
 
@@ -606,6 +726,12 @@ def main() -> None:
         help="Model architecture override (default: checkpoint args.arch or film_unet)",
     )
     p.add_argument(
+        "--contour-interval",
+        type=float,
+        default=DEFAULT_CONTOUR_INTERVAL_M,
+        help="Contour interval in meters for SDF metric (default: 10.0)",
+    )
+    p.add_argument(
         "--blend-arch",
         choices=ARCH_CHOICES,
         default=None,
@@ -613,6 +739,7 @@ def main() -> None:
     )
     args = p.parse_args()
     prediction_sources = list(dict.fromkeys(args.prediction_source))
+    set_eval_contour_interval(args.contour_interval)
 
     ckpt = None
     state = None
@@ -817,6 +944,14 @@ def main() -> None:
         log.info("slope RMSE_w:%.6f", metrics["slope_rmse_w"])
         log.info("slope MAE_deg_w:  %.6f deg", metrics["slope_mae_deg_w"])
         log.info("slope RMSE_deg_w: %.6f deg", metrics["slope_rmse_deg_w"])
+        log.info("grad_x RMSE_w:   %.6f (rise/run)", metrics["grad_x_rmse_w"])
+        log.info("grad_y RMSE_w:   %.6f (rise/run)", metrics["grad_y_rmse_w"])
+        log.info("laplacian RMSE_w:%.6f (m/m^2)", metrics["laplacian_rmse_w"])
+        log.info(
+            "sdf RMSE_w:      %.6f m (contour interval=%.3g m)",
+            metrics["sdf_rmse_w"],
+            metrics["contour_interval_m"],
+        )
 
     payload = {
         "prediction_source": prediction_sources,

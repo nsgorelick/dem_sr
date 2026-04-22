@@ -14,7 +14,15 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
-from dem_film_unet import ARCH_CHOICES, ARCH_FILM, create_model, loss_dem
+from dem_film_unet import (
+    ARCH_CHOICES,
+    ARCH_FILM,
+    DEFAULT_CONTOUR_INTERVAL_M,
+    LOSS_PRESET_BASELINE,
+    LOSS_PRESET_CHOICES,
+    create_model,
+    loss_dem_preset,
+)
 from local_patch_dataset import (
     LocalDemPatchDataset,
     collate_dem_batch,
@@ -128,6 +136,28 @@ def main() -> None:
         help="Model architecture variant",
     )
     p.add_argument(
+        "--loss-preset",
+        choices=LOSS_PRESET_CHOICES,
+        default=LOSS_PRESET_BASELINE,
+        help="Loss configuration: baseline | geom | multitask | contour",
+    )
+    p.add_argument(
+        "--contour-interval",
+        type=float,
+        default=DEFAULT_CONTOUR_INTERVAL_M,
+        help="Contour interval in meters for SDF / soft-contour losses",
+    )
+    p.add_argument("--lambda-grad", type=float, default=0.25, help="Weight for dx/dy gradient L1")
+    p.add_argument("--lambda-curv", type=float, default=0.1, help="Weight for Laplacian L1")
+    p.add_argument("--lambda-ms", type=float, default=0.5, help="Weight for 2x multi-scale elev L1")
+    p.add_argument("--lambda-sdf", type=float, default=0.5, help="Weight for contour SDF L1")
+    p.add_argument(
+        "--lambda-contour",
+        type=float,
+        default=0.25,
+        help="Weight for soft contour-indicator L1",
+    )
+    p.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -205,9 +235,11 @@ def main() -> None:
 
     model = create_model(args.arch).to(device)
     log.info("Architecture: %s", args.arch)
+    log.info("Loss preset: %s (contour_interval=%.3g m)", args.loss_preset, args.contour_interval)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     amp_enabled = args.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+    loss_component_names = ("elev", "slope", "grad", "curv", "ms_elev", "sdf", "contour")
     history: dict[str, list[float | None]] = {
         "train_loss": [],
         "train_elev_loss": [],
@@ -218,6 +250,9 @@ def main() -> None:
         "epoch_seconds": [],
         "samples_per_second": [],
     }
+    for _name in loss_component_names:
+        history.setdefault(f"train_{_name}_loss", [])
+        history.setdefault(f"val_{_name}_loss", [])
     start_epoch = 0
 
     if args.resume is not None:
@@ -265,6 +300,21 @@ def main() -> None:
         ckpt_history = ckpt.get("history")
         if isinstance(ckpt_history, dict):
             history = ckpt_history
+            ref_len = len(history.get("train_loss", []))
+            for _name in loss_component_names:
+                for prefix in ("train", "val"):
+                    key = f"{prefix}_{_name}_loss"
+                    if key not in history:
+                        history[key] = [None] * ref_len
+
+        if isinstance(ckpt_args, dict):
+            ckpt_preset = ckpt_args.get("loss_preset", LOSS_PRESET_BASELINE)
+            if ckpt_preset != args.loss_preset:
+                log.warning(
+                    "Resume loss-preset differs: checkpoint=%s current=%s",
+                    ckpt_preset,
+                    args.loss_preset,
+                )
 
         start_epoch = int(ckpt.get("epoch", 0))
         if start_epoch >= args.epochs:
@@ -276,12 +326,22 @@ def main() -> None:
             sys.exit(1)
         log.info("Resumed from %s at completed epoch %d", args.resume, start_epoch)
 
+    loss_kwargs = dict(
+        lambda_slope=args.lambda_slope,
+        lambda_grad=args.lambda_grad,
+        lambda_curv=args.lambda_curv,
+        lambda_ms=args.lambda_ms,
+        lambda_sdf=args.lambda_sdf,
+        lambda_contour=args.lambda_contour,
+        contour_interval=args.contour_interval,
+    )
+
     for epoch in range(start_epoch, args.epochs):
         epoch_start = time.perf_counter()
         model.train()
         running = 0.0
-        running_elev = 0.0
-        running_slope = 0.0
+        running_components: dict[str, float] = {name: 0.0 for name in loss_component_names}
+        running_component_counts: dict[str, int] = {name: 0 for name in loss_component_names}
         n_batch = 0
         train_bar = tqdm(
             train_loader,
@@ -302,18 +362,22 @@ def main() -> None:
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=amp_enabled):
                 z_hat = model(x_dem, x_ae, z_lr)
-                loss, le, ls = loss_dem(z_hat, z_gt, w, lambda_slope=args.lambda_slope)
+                loss, components = loss_dem_preset(
+                    z_hat, z_gt, w, preset=args.loss_preset, **loss_kwargs
+                )
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
 
             loss_value = float(loss.detach())
-            elev_value = float(le)
-            slope_value = float(ls)
             running += loss_value
-            running_elev += elev_value
-            running_slope += slope_value
+            for name in loss_component_names:
+                if name in components:
+                    running_components[name] += float(components[name])
+                    running_component_counts[name] += 1
             n_batch += 1
+            elev_value = float(components["elev"])
+            slope_value = float(components["slope"])
             train_bar.set_postfix(
                 loss=f"{loss_value:.4f}",
                 elev=f"{elev_value:.4f}",
@@ -324,20 +388,30 @@ def main() -> None:
         epoch_seconds = time.perf_counter() - epoch_start
         samples_per_second = (n_batch * args.batch_size) / max(epoch_seconds, 1e-8)
         train_loss_mean = running / max(n_batch, 1)
-        train_elev_mean = running_elev / max(n_batch, 1)
-        train_slope_mean = running_slope / max(n_batch, 1)
+        component_means: dict[str, float | None] = {}
+        for name in loss_component_names:
+            cnt = running_component_counts[name]
+            component_means[name] = (running_components[name] / cnt) if cnt > 0 else None
         history["train_loss"].append(train_loss_mean)
-        history["train_elev_loss"].append(train_elev_mean)
-        history["train_slope_loss"].append(train_slope_mean)
+        history["train_elev_loss"].append(component_means["elev"])
+        history["train_slope_loss"].append(component_means["slope"])
+        for name in loss_component_names:
+            history[f"train_{name}_loss"].append(component_means[name])
         history["epoch_seconds"].append(epoch_seconds)
         history["samples_per_second"].append(samples_per_second)
 
+        extra = " ".join(
+            f"{name}={component_means[name]:.6f}"
+            for name in ("grad", "curv", "ms_elev", "sdf", "contour")
+            if component_means.get(name) is not None
+        )
         log.info(
-            "epoch %d train loss mean=%.6f elev=%.6f slope=%.6f (%d batches, %.2f samples/s, %.1fs)",
+            "epoch %d train loss mean=%.6f elev=%.6f slope=%.6f %s(%d batches, %.2f samples/s, %.1fs)",
             epoch + 1,
             train_loss_mean,
-            train_elev_mean,
-            train_slope_mean,
+            component_means["elev"] if component_means["elev"] is not None else float("nan"),
+            component_means["slope"] if component_means["slope"] is not None else float("nan"),
+            (extra + " ") if extra else "",
             n_batch,
             samples_per_second,
             epoch_seconds,
@@ -346,9 +420,9 @@ def main() -> None:
         if val_loader is not None:
             model.eval()
             vsum = 0.0
-            velev = 0.0
-            vslope = 0.0
             vn = 0
+            v_components: dict[str, float] = {name: 0.0 for name in loss_component_names}
+            v_component_counts: dict[str, int] = {name: 0 for name in loss_component_names}
             with torch.no_grad():
                 val_bar = tqdm(
                     val_loader,
@@ -364,37 +438,51 @@ def main() -> None:
                     w = batch["w"].to(device, non_blocking=True)
                     with torch.amp.autocast("cuda", enabled=amp_enabled):
                         z_hat = model(x_dem, x_ae, z_lr)
-                        loss, le, ls = loss_dem(z_hat, z_gt, w, lambda_slope=args.lambda_slope)
+                        loss, components = loss_dem_preset(
+                            z_hat, z_gt, w, preset=args.loss_preset, **loss_kwargs
+                        )
                     loss_value = float(loss)
-                    elev_value = float(le)
-                    slope_value = float(ls)
                     vsum += loss_value
-                    velev += elev_value
-                    vslope += slope_value
+                    for name in loss_component_names:
+                        if name in components:
+                            v_components[name] += float(components[name])
+                            v_component_counts[name] += 1
                     vn += 1
                     val_bar.set_postfix(
                         loss=f"{loss_value:.4f}",
-                        elev=f"{elev_value:.4f}",
-                        slope=f"{slope_value:.4f}",
+                        elev=f"{float(components['elev']):.4f}",
+                        slope=f"{float(components['slope']):.4f}",
                         mean=f"{vsum / max(vn, 1):.4f}",
                     )
             val_loss_mean = vsum / max(vn, 1)
-            val_elev_mean = velev / max(vn, 1)
-            val_slope_mean = vslope / max(vn, 1)
+            v_means: dict[str, float | None] = {}
+            for name in loss_component_names:
+                cnt = v_component_counts[name]
+                v_means[name] = (v_components[name] / cnt) if cnt > 0 else None
             history["val_loss"].append(val_loss_mean)
-            history["val_elev_loss"].append(val_elev_mean)
-            history["val_slope_loss"].append(val_slope_mean)
+            history["val_elev_loss"].append(v_means["elev"])
+            history["val_slope_loss"].append(v_means["slope"])
+            for name in loss_component_names:
+                history[f"val_{name}_loss"].append(v_means[name])
+            extra = " ".join(
+                f"{name}={v_means[name]:.6f}"
+                for name in ("grad", "curv", "ms_elev", "sdf", "contour")
+                if v_means.get(name) is not None
+            )
             log.info(
-                "epoch %d val loss mean=%.6f elev=%.6f slope=%.6f",
+                "epoch %d val loss mean=%.6f elev=%.6f slope=%.6f %s",
                 epoch + 1,
                 val_loss_mean,
-                val_elev_mean,
-                val_slope_mean,
+                v_means["elev"] if v_means["elev"] is not None else float("nan"),
+                v_means["slope"] if v_means["slope"] is not None else float("nan"),
+                extra,
             )
         else:
             history["val_loss"].append(None)
             history["val_elev_loss"].append(None)
             history["val_slope_loss"].append(None)
+            for name in loss_component_names:
+                history[f"val_{name}_loss"].append(None)
 
         epoch_out = args.checkpoint_out.with_name(
             f"{args.checkpoint_out.stem}_epoch_{epoch + 1:03d}{args.checkpoint_out.suffix}"

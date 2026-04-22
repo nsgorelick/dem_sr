@@ -14,6 +14,7 @@ This repo has been patched to support:
   - external per-patch rasters such as FABDEM
 - export of external comparison DTMs from Earth Engine to the same 10 m patch grid
 - selectable model architectures (`--arch`) and training resume (`--resume`) for architecture experiments
+- selectable contour-aware loss presets (`--loss-preset {baseline,geom,multitask,contour}`) with per-term lambda overrides and shared `--contour-interval` between `train_dem.py` and `eval_dem.py`
 
 Current environment assumptions:
 
@@ -66,7 +67,13 @@ Current behavior:
 
 - local-only training from `/data/training`
 - `--arch` selects the model: `film_unet` (default, FiLM dual-encoder U-Net), `gated_unet` (spatial gated AE fusion at S1–S3), `xattn_unet` (FiLM at S1; windowed DEM→AE cross-attention at S2–S3), `hybrid_tf_unet` (FiLM at S1–S3; windowed self-attention + FFN bottleneck at S3), or `rcan_ae_unet` (RCAN-style residual channel-attention trunk with AE conditioning)
-- `--resume PATH` continues from a checkpoint written by this script (restores model, optimizer, scaler, history; next epoch is `saved_epoch + 1`). Architecture must match the checkpoint (`--arch`).
+- `--loss-preset` picks the loss stack from `contours.md`:
+  - `baseline` (default): weighted SmoothL1(elev) + `--lambda-slope` · |slope diff|, matches legacy `loss_dem`
+  - `geom`: baseline + `--lambda-grad` · (dx L1 + dy L1) + `--lambda-curv` · Laplacian L1 + `--lambda-ms` · 2x multi-scale elev L1
+  - `multitask`: `geom` + `--lambda-sdf` · contour SDF L1 + `--lambda-contour` · soft contour-indicator L1
+  - `contour`: baseline + `--lambda-sdf` · contour SDF L1 only
+- `--contour-interval` (default `10.0 m`) sets the spacing used by the SDF / soft-contour targets; all auxiliary targets are derived on-the-fly from `z_gt`/`z_hat`, so no patch regeneration is required
+- `--resume PATH` continues from a checkpoint written by this script (restores model, optimizer, scaler, history; next epoch is `saved_epoch + 1`). Architecture must match the checkpoint (`--arch`); a differing `--loss-preset` is allowed but logged as a warning.
 - `tqdm` progress bar
 - per-epoch checkpoints like `dem_film_unet_epoch_015.pt`
 - optional random `90/180/270` rotations and horizontal/vertical flips for training samples via `--augment-rotflip` (default enabled)
@@ -77,6 +84,7 @@ Current behavior:
   - `history["val_loss"]`
   - `history["val_elev_loss"]`
   - `history["val_slope_loss"]`
+  - per-component entries `history["train_<name>_loss"]` and `history["val_<name>_loss"]` for `name` in `elev, slope, grad, curv, ms_elev, sdf, contour` (components missing from the active preset are recorded as `None`)
   - `history["epoch_seconds"]`
   - `history["samples_per_second"]`
   - `train_loss_curve`
@@ -97,10 +105,29 @@ Current behavior:
 - `DemHybridTransformerUNet`: same FiLM fusion as baseline; after S3 FiLM, **two** `BottleneckTransformerBlock` stacks (8×8 windowed self-attention + conv FFN, residual), then U-Net decode (DSRT-style global context at coarse scale).
 - `DemRCANAE`: RCAN-style model with channel-attention residual groups at full resolution, AE channel-gated conditioning, and residual output head (`z_lr + clamped residual`).
 - `create_model(arch)` factory; `ARCH_FILM` / `ARCH_GATED` / `ARCH_XATTN` / `ARCH_HYBRID_TF` / `ARCH_RCAN_AE` constants.
+- Geometry / contour helpers: `terrain_grad(z)`, `terrain_laplacian(z)`, `contour_sdf(z, interval)` (signed vertical offset to nearest contour, differentiable), `contour_soft(z, interval)` (smooth contour indicator), and `contour_binary(z, interval)` (hard 0/1 crossing map, for reporting only).
+- `loss_dem_preset(z_hat, z_gt, w, preset, ...)` assembles the `baseline` / `geom` / `multitask` / `contour` loss stacks from `contours.md` §5 and returns `(total, components)`. Legacy `loss_dem` is retained unchanged.
 
 ### `plan.md`
 
 - Tracks architecture exploration runs (screening protocol, example train/eval commands, TODO list) without changing training data or chip size.
+- Now also tracks the contour-aware Loss Preset Sweep (see "Loss Preset Sweep" section), which shares the non-AU/AU manifests and runs on `--arch film_unet` with `--loss-preset ∈ {baseline, geom, multitask, contour}`.
+
+### `run_loss_presets_non_au_vs_au.sh`
+
+New script mirroring `run_arch_non_au_vs_au.sh` but fixing `--arch` (default `film_unet`) and iterating `--loss-preset` over the four contour-aware presets. Reuses the same `make_manifest.py`-driven non-AU/AU split and writes checkpoints / eval JSONs into `runs/<RUN_NAME>/{checkpoints,eval}/`.
+
+Defaults are tuned for a fast screening sweep, not a full comparison:
+
+- `EPOCHS=3`
+- `HARD_FRACTION=0.10` — trains on the hardest 10% of non-AU stems ranked by `resid_scale` / `residAbs_p95`, filtered by the existing patch-quality thresholds (`mean_W ≥ 0.4`, `valid_frac ≥ 0.8`, `gt_coverage_mean ≥ 0.8`, `relief ≥ 0.5`, `frac_water ≤ 0.25`). Set `HARD_FRACTION=1.0` to fall back to the full non-AU manifest.
+- `VAL_HARD_FRACTION=0.10` — evaluates on the same hardest-10% slice of the AU validation manifest (one fixed val subset, shared across the `z_lr` baseline and all presets, so ranking remains valid). Set `VAL_HARD_FRACTION=1.0` for the full AU val set — recommended for the final winner re-eval.
+- `HARD_SCORE_FIELD=resid_scale` (other supported fields: `p90_slope`, `relief`, `mean_uncert`)
+- Note: because the hard-val slice is selected precisely where the bicubic baseline is poor, absolute `z_lr` metrics on the screening sweep will look much worse than on full AU; only within-sweep rank-ordering is meaningful.
+
+### `select_hard_patches.py`
+
+Subsampler used by `run_loss_presets_non_au_vs_au.sh`. Reads a training manifest plus a patch-summary table, applies `row_passes_eval_filters` to drop water-dominated / low-coverage / thin-weight stems, ranks the remainder by a single numeric field (alias-aware: `resid_scale` ↔ `residAbs_p95`, `p90_slope` ↔ `slope_p90`, etc.), and writes the top `--fraction` to a new manifest plus an optional `--summary-json` describing the cutoff. Deterministic tie-breaking via `--tie-break-seed` (default `42`). Can be run standalone to build other hard subsets (e.g., `--score-field p90_slope` for a "steep-terrain" manifest).
 
 ### `make_manifest.py`
 
@@ -140,6 +167,9 @@ Current behavior:
   - slope RMSE
   - slope MAE in degrees
   - slope RMSE in degrees
+  - gradient dx/dy MAE and RMSE (rise/run)
+  - Laplacian / curvature MAE and RMSE (m/m^2)
+  - contour SDF MAE and RMSE in meters at `--contour-interval` (default 10 m), recorded alongside the interval under `contour_interval_m`
 - optional per-patch JSON output via `--per-patch-json`
 - optional patch-table join via `--patch-table`
 - optional stratified summary JSON via `--stratified-json`
@@ -400,9 +430,9 @@ Known outputs in repo:
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
-- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet` and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch` and optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
+- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet`, `--loss-preset baseline|geom|multitask|contour` (+ `--contour-interval` and per-term `--lambda-*` overrides), and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch`, `--contour-interval`, and optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
 - `plan.md` tracks architecture experiments and example commands
-- `run_arch_non_au_vs_au.sh` is the primary sweep script and expects `PATCH_TABLE` (current table: `200k.geojson`)
+- `run_arch_non_au_vs_au.sh` is the primary architecture sweep script and `run_loss_presets_non_au_vs_au.sh` is the sibling contour-aware loss-preset sweep (defaults: `EPOCHS=3`, `HARD_FRACTION=0.10`, hard-patch ranking via `select_hard_patches.py`); both expect `PATCH_TABLE` (current table: `200k.geojson`)
 - performance metrics in this file were intentionally reset and must be regenerated under the new split
 - current split target is: train on non-AU patches, validate on AU patches
 - new training checkpoints store train/val loss curves

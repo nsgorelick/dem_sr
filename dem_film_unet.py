@@ -14,6 +14,19 @@ ARCH_HYBRID_TF = "hybrid_tf_unet"
 ARCH_RCAN_AE = "rcan_ae_unet"
 ARCH_CHOICES = (ARCH_FILM, ARCH_GATED, ARCH_XATTN, ARCH_HYBRID_TF, ARCH_RCAN_AE)
 
+LOSS_PRESET_BASELINE = "baseline"
+LOSS_PRESET_GEOM = "geom"
+LOSS_PRESET_MULTITASK = "multitask"
+LOSS_PRESET_CONTOUR = "contour"
+LOSS_PRESET_CHOICES = (
+    LOSS_PRESET_BASELINE,
+    LOSS_PRESET_GEOM,
+    LOSS_PRESET_MULTITASK,
+    LOSS_PRESET_CONTOUR,
+)
+
+DEFAULT_CONTOUR_INTERVAL_M = 10.0
+
 
 class ResBlock(nn.Module):
     def __init__(self, c_in: int, c_out: int) -> None:
@@ -748,19 +761,75 @@ def create_model(arch: str, *, r_cap: float = 20.0) -> nn.Module:
     raise ValueError(f"Unsupported arch={arch!r}; expected one of {ARCH_CHOICES}")
 
 
-def terrain_slope(z: torch.Tensor, pixel_size_m: float = 10.0) -> torch.Tensor:
-    """Slope magnitude as rise/run from centered differences on a 10 m grid."""
-    # z: (B, 1, H, W)
-    pad = (1, 1, 1, 1)
-    zp = F.pad(z, pad, mode="replicate")
+def terrain_grad(z: torch.Tensor, pixel_size_m: float = 10.0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Centered-difference gradient components ``(dz/dx, dz/dy)`` in rise/run."""
+    zp = F.pad(z, (1, 1, 1, 1), mode="replicate")
     dzdx = (zp[:, :, 1:-1, 2:] - zp[:, :, 1:-1, :-2]) / (2.0 * pixel_size_m)
     dzdy = (zp[:, :, 2:, 1:-1] - zp[:, :, :-2, 1:-1]) / (2.0 * pixel_size_m)
+    return dzdx, dzdy
+
+
+def terrain_slope(z: torch.Tensor, pixel_size_m: float = 10.0) -> torch.Tensor:
+    """Slope magnitude as rise/run from centered differences on a 10 m grid."""
+    dzdx, dzdy = terrain_grad(z, pixel_size_m=pixel_size_m)
     return torch.sqrt(dzdx * dzdx + dzdy * dzdy + 1e-8)
 
 
 def slope_to_degrees(slope_rise_run: torch.Tensor) -> torch.Tensor:
     """Convert rise/run slope magnitude to degrees."""
     return torch.atan(slope_rise_run) * (180.0 / torch.pi)
+
+
+def terrain_laplacian(z: torch.Tensor, pixel_size_m: float = 10.0) -> torch.Tensor:
+    """Discrete 5-point Laplacian of ``z``; units ``m / m^2`` (curvature proxy)."""
+    zp = F.pad(z, (1, 1, 1, 1), mode="replicate")
+    lap = (
+        zp[:, :, 1:-1, 2:]
+        + zp[:, :, 1:-1, :-2]
+        + zp[:, :, 2:, 1:-1]
+        + zp[:, :, :-2, 1:-1]
+        - 4.0 * z
+    ) / (pixel_size_m * pixel_size_m)
+    return lap
+
+
+def contour_sdf(z: torch.Tensor, interval: float = DEFAULT_CONTOUR_INTERVAL_M) -> torch.Tensor:
+    """Signed vertical offset to the nearest contour at elevation ``k * interval``.
+
+    Returned values lie in ``[-interval/2, interval/2]``: positive when ``z`` sits
+    above the nearest contour, negative when below. Piecewise-linear (derivative
+    1 almost everywhere) so it is differentiable w.r.t. ``z``.
+    """
+    half = 0.5 * interval
+    return torch.remainder(z + half, interval) - half
+
+
+def contour_soft(z: torch.Tensor, interval: float = DEFAULT_CONTOUR_INTERVAL_M) -> torch.Tensor:
+    """Smooth contour indicator in ``[0, 1]`` peaking at ``z = k * interval``.
+
+    Uses ``cos^2(pi * z / interval)`` so the peak is at each contour level and
+    the derivative is everywhere defined, letting L1 on ``contour_soft(z_hat)``
+    vs ``contour_soft(z_gt)`` penalize misaligned contour locations without the
+    non-differentiability of a hard binary mask.
+    """
+    return 0.5 * (1.0 + torch.cos(2.0 * torch.pi * z / interval))
+
+
+def contour_binary(z: torch.Tensor, interval: float = DEFAULT_CONTOUR_INTERVAL_M) -> torch.Tensor:
+    """Hard 0/1 contour-crossing map. Non-differentiable; for reporting only.
+
+    A pixel is marked 1 when ``floor(z / interval)`` differs from any of its
+    four neighbors, i.e., a contour line passes through or adjacent to it.
+    """
+    lvl = torch.floor(z / interval)
+    lp = F.pad(lvl, (1, 1, 1, 1), mode="replicate")
+    neigh_diff = (
+        (lp[:, :, 1:-1, 2:] != lvl).float()
+        + (lp[:, :, 1:-1, :-2] != lvl).float()
+        + (lp[:, :, 2:, 1:-1] != lvl).float()
+        + (lp[:, :, :-2, 1:-1] != lvl).float()
+    )
+    return (neigh_diff > 0).float()
 
 
 def loss_dem(
@@ -779,3 +848,89 @@ def loss_dem(
     l_slope = ((s_hat - s_gt).abs() * w).sum() / (w.sum() + 1e-8)
 
     return l_elev + lambda_slope * l_slope, l_elev.detach(), l_slope.detach()
+
+
+def loss_dem_preset(
+    z_hat: torch.Tensor,
+    z_gt: torch.Tensor,
+    w: torch.Tensor,
+    preset: str = LOSS_PRESET_BASELINE,
+    *,
+    lambda_slope: float = 0.5,
+    lambda_grad: float = 0.25,
+    lambda_curv: float = 0.1,
+    lambda_ms: float = 0.5,
+    lambda_sdf: float = 0.5,
+    lambda_contour: float = 0.25,
+    contour_interval: float = DEFAULT_CONTOUR_INTERVAL_M,
+    smooth_l1_beta: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Multi-component DEM loss keyed by ``preset``.
+
+    Presets:
+      - ``baseline``:  elev SmoothL1 + lambda_slope * |slope diff|.
+      - ``geom``:      baseline + grad dx/dy L1 + Laplacian L1 + multi-scale (2x) elev L1.
+      - ``multitask``: ``geom`` + contour SDF L1 + soft contour-indicator L1.
+      - ``contour``:   baseline + contour SDF L1 only.
+
+    Returns ``(total, components)`` where ``components`` maps each term name
+    (``elev``, ``slope``, ``grad``, ``curv``, ``ms_elev``, ``sdf``, ``contour``,
+    ``total``) to its detached scalar value. Missing-for-preset terms are omitted.
+    """
+    if preset not in LOSS_PRESET_CHOICES:
+        raise ValueError(f"Unknown preset={preset!r}; expected one of {LOSS_PRESET_CHOICES}")
+
+    w_sum = w.sum() + 1e-8
+
+    def _wmean(x: torch.Tensor) -> torch.Tensor:
+        return (x * w).sum() / w_sum
+
+    elev = F.smooth_l1_loss(z_hat, z_gt, beta=smooth_l1_beta, reduction="none")
+    l_elev = _wmean(elev)
+
+    s_hat = terrain_slope(z_hat)
+    s_gt = terrain_slope(z_gt)
+    l_slope = _wmean((s_hat - s_gt).abs())
+
+    total = l_elev + lambda_slope * l_slope
+    components: dict[str, torch.Tensor] = {
+        "elev": l_elev.detach(),
+        "slope": l_slope.detach(),
+    }
+
+    if preset in (LOSS_PRESET_GEOM, LOSS_PRESET_MULTITASK):
+        gx_h, gy_h = terrain_grad(z_hat)
+        gx_g, gy_g = terrain_grad(z_gt)
+        l_grad = _wmean((gx_h - gx_g).abs() + (gy_h - gy_g).abs())
+
+        lap_h = terrain_laplacian(z_hat)
+        lap_g = terrain_laplacian(z_gt)
+        l_curv = _wmean((lap_h - lap_g).abs())
+
+        z_hat_ds = F.avg_pool2d(z_hat, kernel_size=2, stride=2)
+        z_gt_ds = F.avg_pool2d(z_gt, kernel_size=2, stride=2)
+        w_ds = F.avg_pool2d(w, kernel_size=2, stride=2)
+        elev_ds = F.smooth_l1_loss(z_hat_ds, z_gt_ds, beta=smooth_l1_beta, reduction="none")
+        l_ms = (elev_ds * w_ds).sum() / (w_ds.sum() + 1e-8)
+
+        total = total + lambda_grad * l_grad + lambda_curv * l_curv + lambda_ms * l_ms
+        components["grad"] = l_grad.detach()
+        components["curv"] = l_curv.detach()
+        components["ms_elev"] = l_ms.detach()
+
+    if preset in (LOSS_PRESET_MULTITASK, LOSS_PRESET_CONTOUR):
+        sdf_h = contour_sdf(z_hat, contour_interval)
+        sdf_g = contour_sdf(z_gt, contour_interval)
+        l_sdf = _wmean((sdf_h - sdf_g).abs())
+        total = total + lambda_sdf * l_sdf
+        components["sdf"] = l_sdf.detach()
+
+    if preset == LOSS_PRESET_MULTITASK:
+        c_h = contour_soft(z_hat, contour_interval)
+        c_g = contour_soft(z_gt, contour_interval)
+        l_contour = _wmean((c_h - c_g).abs())
+        total = total + lambda_contour * l_contour
+        components["contour"] = l_contour.detach()
+
+    components["total"] = total.detach()
+    return total, components
