@@ -1,0 +1,43 @@
+{
+  "description": "short subset two_stage stage_a 3ep",
+  "shared": {
+    "data_root": "/data/training",
+    "batch_size": 16,
+    "workers": 3,
+    "amp": true,
+    "precomputed_weight": false,
+    "contour_interval": 10.0,
+    "arch": "film_unet",
+    "loss_preset": "baseline"
+  },
+  "train": {
+    "experiment": "two_stage",
+    "preset": "baseline",
+    "seed": 42,
+    "manifest": "experiment-runs/short_test_4k8h/manifests/train_hard_4000.txt",
+    "epochs": 3,
+    "lr": 0.0001,
+    "checkpoint_out": "experiment-runs/short/two_stage/checkpoints/model.pt",
+    "output_json": "experiment-runs/short/two_stage/train_report.json",
+    "loss_system": "preset",
+    "augment_rotflip": true,
+    "two_stage_train_stage": "stage_a",
+    "two_stage_a_checkpoint": null,
+    "two_stage_coarse_pool_kernel": 4
+  },
+  "eval": {
+    "experiment": "two_stage",
+    "preset": "baseline",
+    "prediction_source": ["stage_a", "z_lr"],
+    "checkpoint": "experiment-runs/short/two_stage/checkpoints/model.pt",
+    "manifest": "experiment-runs/short_test_4k8h/manifests/eval_hard_800.txt",
+    "list_from_root": false,
+    "output_json": null,
+    "two_stage_train_stage": "stage_a",
+    "two_stage_a_checkpoint": null,
+    "two_stage_coarse_pool_kernel": 4,
+    "patch_table": null,
+    "per_patch_json": null,
+    "stratified_json": null
+  }
+}

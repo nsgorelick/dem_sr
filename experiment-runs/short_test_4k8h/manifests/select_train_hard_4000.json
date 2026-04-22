@@ -1,0 +1,25 @@
+{
+  "manifest_in": "experiment-runs/short_test_4k8h/manifests/pool_train_dev.txt",
+  "patch_table": "/home/gorelick/projects/DEM/200k.geojson",
+  "score_field": "resid_scale",
+  "fraction": 1.0,
+  "max_count": 4000,
+  "input_stems": 135469,
+  "matched_table_rows": 135469,
+  "missing_table_rows": 0,
+  "failed_quality_filter": 8142,
+  "missing_score": 0,
+  "eligible_stems": 127327,
+  "selected_stems": 4000,
+  "quality_thresholds": {
+    "min_mean_w": 0.4,
+    "min_valid_frac": 0.8,
+    "min_gt_coverage": 0.8,
+    "min_relief": 0.5,
+    "max_frac_water": 0.25
+  },
+  "score_top": 10117.688747355223,
+  "score_median": 15.42159234284934,
+  "score_cutoff": 13.434266962552753,
+  "out": "experiment-runs/short_test_4k8h/manifests/train_hard_4000.txt"
+}

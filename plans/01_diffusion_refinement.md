@@ -25,7 +25,7 @@ Replace one-shot regression with iterative denoising that models a conditional d
   - Add forward noising step and denoising loss path.
   - Add EMA weights for stable sampling.
 - **Inference changes**
-  - Add iterative denoising sampler path to `eval_dem.py`.
+  - Add iterative denoising sampler path to `eval_experiment.py`.
   - Add configurable sampler params (steps, guidance strength, deterministic/stochastic).
 - **Checkpoint format**
   - Store diffusion config (schedule, parameterization, sampler defaults).

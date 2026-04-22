@@ -94,7 +94,8 @@ if [[ "${USE_AMP}" == "1" ]]; then
 fi
 
 echo "==> Evaluating z_lr baseline on AU validation"
-python3 eval_dem.py \
+python3 eval_experiment.py \
+  --experiment baseline \
   --prediction-source z_lr \
   --data-root "${DATA_ROOT}" \
   --manifest "${VAL_MANIFEST}" \
@@ -107,7 +108,8 @@ for ARCH in "${ARCHES[@]}"; do
   ARCH_EVAL_JSON="${EVAL_DIR}/eval_${ARCH}.json"
 
   echo "==> Training ${ARCH} (${EPOCHS} epochs, batch=${BATCH_SIZE}, workers=${WORKERS})"
-  python3 train_dem.py \
+  python3 train_experiment.py \
+    --experiment baseline \
     --arch "${ARCH}" \
     --data-root "${DATA_ROOT}" \
     --manifest "${TRAIN_MANIFEST}" \
@@ -118,7 +120,8 @@ for ARCH in "${ARCHES[@]}"; do
     --checkpoint-out "${CKPT_PATH}"
 
   echo "==> Evaluating ${ARCH} on AU validation"
-  python3 eval_dem.py \
+  python3 eval_experiment.py \
+    --experiment baseline \
     --prediction-source model \
     --arch "${ARCH}" \
     --checkpoint "${CKPT_PATH}" \

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Experimental evaluation entrypoint (additive, leaves eval_dem unchanged)."""
+"""Evaluate DEM experiments (model, z_lr baseline, stage_a, etc.)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 
 import torch
@@ -17,9 +16,10 @@ from core.config import (
     add_shared_experiment_args,
     apply_namespace_preset_defaults,
     config_to_dict,
+    export_experiment_cli_config,
     resolve_config,
 )
-from core.metrics import set_contour_interval
+from core.metrics import PATCH_TABLE_FIELDS, set_contour_interval
 from core.reporting import build_eval_payload
 from core.run_config import (
     load_run_config,
@@ -28,6 +28,7 @@ from core.run_config import (
     standardized_eval_output_path,
 )
 from eval.engine import run_eval_epoch_multi_source, run_eval_epoch_multi_source_with_rows
+from experiments.cli_registration import add_all_eval_experiment_args
 from experiments.config_presets import get_preset, list_presets
 from experiments.registry import create_experiment, list_experiments
 
@@ -37,21 +38,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("eval_experiment")
-
-PATCH_TABLE_FIELDS = (
-    "p90_slope",
-    "frac_shore",
-    "frac_water",
-    "has_edge",
-    "frac_building",
-    "mean_uncert",
-    "mean_W",
-    "valid_frac",
-    "gt_coverage_mean",
-    "resid_scale",
-    "relief",
-    "stratum_id",
-)
 
 
 def _as_path(value: str | Path | None) -> Path | None:
@@ -71,11 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, default=None, help="Shared JSON run config file")
     parser.add_argument("--description", default=None, help="Human-readable run description")
-    parser.add_argument(
-        "--delegate-legacy",
-        action="store_true",
-        help="Delegate baseline run to legacy eval_dem.py behavior.",
-    )
     parser.add_argument(
         "--preset",
         default="baseline",
@@ -132,24 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Pixel overlap between inference windows when sliding-window inference is enabled.",
     )
-    parser.add_argument(
-        "--two-stage-a-checkpoint",
-        type=Path,
-        default=None,
-        help="Stage A checkpoint for two_stage experiment when evaluating model output.",
-    )
-    parser.add_argument(
-        "--two-stage-train-stage",
-        choices=("stage_a", "stage_b"),
-        default="stage_b",
-        help="Execution stage for two_stage experiment at evaluation time.",
-    )
-    parser.add_argument(
-        "--two-stage-coarse-pool-kernel",
-        type=int,
-        default=4,
-        help="Average-pooling kernel used to constrain Stage A coarse residual.",
-    )
+    add_all_eval_experiment_args(parser)
     return parser
 
 
@@ -160,7 +124,7 @@ def main() -> None:
         list_patch_stems,
         load_patch_stems_manifest,
     )
-    from patch_table import load_patch_table
+    from core.patch_table import load_patch_table
     from core.metrics import STRATA_FIELDS, build_patch_table_context, compute_stratified_metrics
 
     pre_parser = argparse.ArgumentParser(add_help=False)
@@ -173,7 +137,7 @@ def main() -> None:
     parser = build_parser()
     if run_config:
         parser.set_defaults(**section_defaults(run_config, "eval"))
-    args, passthrough = parser.parse_known_args()
+    args, _ = parser.parse_known_args()
     args.config = _as_path(args.config)
     args.manifest = _as_path(args.manifest)
     args.checkpoint = _as_path(args.checkpoint)
@@ -181,16 +145,9 @@ def main() -> None:
     args.per_patch_json = _as_path(args.per_patch_json)
     args.patch_table = _as_path(args.patch_table)
     args.stratified_json = _as_path(args.stratified_json)
-    args.two_stage_a_checkpoint = _as_path(args.two_stage_a_checkpoint)
     apply_namespace_preset_defaults(args, parser, get_preset("eval", args.preset))
     experiment = create_experiment(args.experiment)
-    if args.delegate_legacy:
-        import eval_dem
-
-        log.info("Delegating experiment '%s' to legacy eval_dem entrypoint.", args.experiment)
-        sys.argv = [sys.argv[0], *passthrough]
-        eval_dem.main()
-        return
+    experiment.coerce_eval_arg_paths(args)
 
     prediction_sources = list(dict.fromkeys(args.prediction_source))
     if args.sliding_window_tile_size is not None:
@@ -329,7 +286,7 @@ def main() -> None:
         list_from_root=bool(cfg.list_from_root),
         contour_interval_m=float(cfg.contour_interval),
         metrics_by_source=metrics_by_source,
-        config=dict(vars(args) | config_to_dict(cfg)),
+        config=export_experiment_cli_config(args, cfg),
     )
     payload["patch_table"] = str(args.patch_table) if args.patch_table else None
     payload["patch_table_match_summary"] = patch_table_match_summary

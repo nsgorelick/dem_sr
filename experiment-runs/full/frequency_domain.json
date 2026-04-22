@@ -1,0 +1,56 @@
+{
+  "description": "plan03 frequency-domain full non-AU train and full AU val pilot",
+  "shared": {
+    "data_root": "/data/training",
+    "batch_size": 32,
+    "workers": 3,
+    "amp": true,
+    "precomputed_weight": false,
+    "contour_interval": 10.0,
+    "arch": "film_unet",
+    "loss_preset": "baseline"
+  },
+  "train": {
+    "experiment": "frequency_domain",
+    "preset": "baseline",
+    "seed": 42,
+    "manifest": "experiment-runs/manifests/fraction1/train_non_au_full.txt",
+    "max_patches": null,
+    "epochs": 6,
+    "lr": 0.0001,
+    "checkpoint_out": "experiment-runs/full/frequency_domain/checkpoints/frequency_domain_film_unet_6ep.pt",
+    "output_json": "experiment-runs/full/frequency_domain/train_report.json",
+    "resume": null,
+    "loss_system": "preset",
+    "lambda_elev": 1.0,
+    "lambda_slope": 0.5,
+    "lambda_grad": 0.25,
+    "lambda_curv": 0.1,
+    "lambda_ms": 0.5,
+    "lambda_sdf": 0.5,
+    "lambda_contour": 0.25,
+    "lambda_band_low": 0.5,
+    "lambda_band_mid": 0.75,
+    "lambda_band_high": 1.0,
+    "lambda_band_high_tv": 0.2,
+    "lambda_band_high_l2": 0.05,
+    "lambda_band_balance": 0.05,
+    "guidance_dropout": 0.3,
+    "augment_rotflip": true
+  },
+  "eval": {
+    "experiment": "frequency_domain",
+    "preset": "baseline",
+    "prediction_source": [
+      "model"
+    ],
+    "checkpoint": "experiment-runs/full/frequency_domain/checkpoints/frequency_domain_film_unet_6ep.pt",
+    "manifest": "experiment-runs/manifests/fraction1/val_au_full.txt",
+    "list_from_root": false,
+    "max_patches": null,
+    "output_json": null,
+    "per_patch_json": "experiment-runs/full/frequency_domain/eval_per_patch.json",
+    "patch_table": "200k.geojson",
+    "stratified_json": "experiment-runs/full/frequency_domain/eval_stratified.json"
+  }
+}

@@ -127,3 +127,39 @@ def apply_namespace_preset_defaults(args: Namespace, parser: ArgumentParser, pre
         if current == default:
             setattr(args, key, value)
 
+
+_TWO_STAGE_ARG_NAMES = frozenset(
+    {
+        "two_stage_train_stage",
+        "two_stage_a_checkpoint",
+        "two_stage_coarse_pool_kernel",
+    }
+)
+_MOS_ARG_NAMES = frozenset({"mos_num_experts", "mos_router_temperature"})
+_BAND_ARG_PREFIX = "lambda_band_"
+
+
+def export_experiment_cli_config(args: Namespace, cfg: ExperimentConfig | None = None) -> dict[str, Any]:
+    """Build a JSON-friendly config dict for reports, omitting unrelated plan CLI defaults.
+
+    Train/eval parsers register a union of all experiment flags; argparse fills unused
+    destinations with defaults (e.g. ``two_stage_train_stage`` for a baseline run).
+    Those defaults are misleading in payloads and are stripped here when the experiment
+    key does not use that plan.
+    """
+    out: dict[str, Any] = dict(vars(args))
+    if cfg is not None:
+        out.update(config_to_dict(cfg))
+    exp = str(out.get("experiment", getattr(args, "experiment", "baseline"))).strip().lower()
+    if exp != "two_stage":
+        for name in _TWO_STAGE_ARG_NAMES:
+            out.pop(name, None)
+    if exp != "mixture_specialists":
+        for name in _MOS_ARG_NAMES:
+            out.pop(name, None)
+    if exp != "frequency_domain":
+        for key in list(out):
+            if key.startswith(_BAND_ARG_PREFIX):
+                out.pop(key, None)
+    return out
+

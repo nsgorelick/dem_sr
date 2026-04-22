@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from make_manifest import get_numeric, row_passes_eval_filters
-from patch_table import load_patch_table
+from core.patch_table import load_patch_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +95,13 @@ def main() -> None:
     p.add_argument("--min-gt-coverage", type=float, default=0.8)
     p.add_argument("--min-relief", type=float, default=0.5)
     p.add_argument("--max-frac-water", type=float, default=0.25)
+    p.add_argument(
+        "--max-count",
+        type=int,
+        default=None,
+        help="Optional cap on how many stems to keep after ranking (top scores first); "
+        "use with --fraction 1.0 to take the N hardest eligible patches",
+    )
     p.add_argument(
         "--min-count",
         type=int,
@@ -167,6 +174,8 @@ def main() -> None:
     eligible.sort(key=lambda t: (-t[0], t[1]))
     keep = max(args.min_count, int(round(eligible_count * args.fraction)))
     keep = min(keep, eligible_count)
+    if args.max_count is not None:
+        keep = min(keep, max(0, int(args.max_count)))
     selected = eligible[:keep]
     cutoff_score = selected[-1][0] if selected else float("nan")
     top_score = selected[0][0] if selected else float("nan")
@@ -191,6 +200,7 @@ def main() -> None:
             "patch_table": str(args.patch_table),
             "score_field": args.score_field,
             "fraction": args.fraction,
+            "max_count": args.max_count,
             "input_stems": len(manifest_stems),
             "matched_table_rows": len(table),
             "missing_table_rows": missing_row,

@@ -1,0 +1,51 @@
+{
+  "description": "baseline full non-AU train and full AU val retest",
+  "shared": {
+    "data_root": "/data/training",
+    "batch_size": 32,
+    "workers": 3,
+    "amp": true,
+    "precomputed_weight": false,
+    "contour_interval": 10.0,
+    "arch": "film_unet",
+    "loss_preset": "baseline"
+  },
+  "train": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "seed": 42,
+    "manifest": "experiment-runs/manifests/fraction1/train_non_au_full.txt",
+    "max_patches": null,
+    "epochs": 6,
+    "lr": 0.0001,
+    "checkpoint_out": "experiment-runs/full/baseline/checkpoints/baseline_film_unet_6ep.pt",
+    "output_json": "experiment-runs/full/baseline/train_report.json",
+    "resume": null,
+    "loss_system": "preset",
+    "lambda_elev": 1.0,
+    "lambda_slope": 0.5,
+    "lambda_grad": 0.25,
+    "lambda_curv": 0.1,
+    "lambda_ms": 0.5,
+    "lambda_sdf": 0.5,
+    "lambda_contour": 0.25,
+    "guidance_dropout": 0.3,
+    "augment_rotflip": true
+  },
+  "eval": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "prediction_source": [
+      "model",
+      "z_lr"
+    ],
+    "checkpoint": "experiment-runs/full/baseline/checkpoints/baseline_film_unet_6ep.pt",
+    "manifest": "experiment-runs/manifests/fraction1/val_au_full.txt",
+    "list_from_root": false,
+    "max_patches": null,
+    "output_json": null,
+    "per_patch_json": "experiment-runs/full/baseline/eval_per_patch.json",
+    "patch_table": "200k.geojson",
+    "stratified_json": "experiment-runs/full/baseline/eval_stratified.json"
+  }
+}

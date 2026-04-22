@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Experimental training entrypoint (additive, leaves train_dem unchanged)."""
+"""Train DEM experiments (baseline, two-stage, frequency-domain, etc.)."""
 
 from __future__ import annotations
 
 import argparse
 import logging
 import random
-import sys
 import time
 import json
 from pathlib import Path
-from collections.abc import Iterable
-
 import torch
 from torch.utils.data import DataLoader
 
@@ -20,11 +17,13 @@ from core.config import (
     add_shared_experiment_args,
     apply_namespace_preset_defaults,
     config_to_dict,
+    export_experiment_cli_config,
     resolve_config,
 )
 from core.pretraining import load_pretrained_encoder
 from core.reporting import build_train_payload
 from core.run_config import load_run_config, resolve_description, section_defaults
+from experiments.cli_registration import add_all_train_experiment_args
 from experiments.config_presets import get_preset, list_presets
 from experiments.registry import create_experiment, list_experiments
 
@@ -128,11 +127,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="Shared JSON run config file")
     parser.add_argument("--description", default=None, help="Human-readable run description")
     parser.add_argument(
-        "--delegate-legacy",
-        action="store_true",
-        help="Delegate baseline run to legacy train_dem.py behavior.",
-    )
-    parser.add_argument(
         "--preset",
         default="baseline",
         choices=list_presets("train"),
@@ -151,69 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional SSL-pretrained encoder checkpoint to initialize model encoders.",
     )
-    parser.add_argument(
-        "--loss-system",
-        choices=("preset", "composite"),
-        default="preset",
-        help="Loss implementation path for experiment training.",
-    )
-    parser.add_argument("--lambda-elev", type=float, default=1.0)
-    parser.add_argument("--lambda-slope", type=float, default=0.5)
-    parser.add_argument("--lambda-grad", type=float, default=0.25)
-    parser.add_argument("--lambda-curv", type=float, default=0.1)
-    parser.add_argument("--lambda-ms", type=float, default=0.5)
-    parser.add_argument("--lambda-sdf", type=float, default=0.5)
-    parser.add_argument("--lambda-contour", type=float, default=0.25)
-    parser.add_argument("--lambda-hydro-flow", type=float, default=0.01)
-    parser.add_argument("--lambda-hydro-pit-spike", type=float, default=0.005)
-    parser.add_argument(
-        "--enable-hydro-flow",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable hydrology flow-direction proxy loss term.",
-    )
-    parser.add_argument(
-        "--enable-hydro-pit-spike",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable hydrology pit/spike penalty term.",
-    )
-    parser.add_argument("--hydro-flow-temperature", type=float, default=8.0)
-    parser.add_argument("--hydro-pit-kernel-size", type=int, default=3)
-    parser.add_argument("--hydro-water-downweight", type=float, default=0.95)
-    parser.add_argument("--hydro-shoreline-downweight", type=float, default=0.7)
-    parser.add_argument("--mos-num-experts", type=int, default=3, help="Number of MoS specialist heads (2-3).")
-    parser.add_argument(
-        "--mos-router-temperature",
-        type=float,
-        default=1.0,
-        help="Softmax temperature for MoS router logits.",
-    )
-    parser.add_argument("--lambda-band-low", type=float, default=0.5)
-    parser.add_argument("--lambda-band-mid", type=float, default=0.75)
-    parser.add_argument("--lambda-band-high", type=float, default=1.0)
-    parser.add_argument("--lambda-band-high-tv", type=float, default=0.2)
-    parser.add_argument("--lambda-band-high-l2", type=float, default=0.05)
-    parser.add_argument("--lambda-band-balance", type=float, default=0.05)
-    parser.add_argument("--guidance-dropout", type=float, default=0.3)
-    parser.add_argument(
-        "--two-stage-train-stage",
-        choices=("stage_a", "stage_b"),
-        default="stage_a",
-        help="Training stage selector for two_stage experiment.",
-    )
-    parser.add_argument(
-        "--two-stage-a-checkpoint",
-        type=Path,
-        default=None,
-        help="Stage A checkpoint used to initialize/freeze Stage A for stage_b training.",
-    )
-    parser.add_argument(
-        "--two-stage-coarse-pool-kernel",
-        type=int,
-        default=4,
-        help="Average-pooling kernel used to constrain Stage A to coarse structure.",
-    )
+    add_all_train_experiment_args(parser)
     parser.add_argument(
         "--augment-rotflip",
         action=argparse.BooleanOptionalAction,
@@ -242,24 +174,17 @@ def main() -> None:
     parser = build_parser()
     if run_config:
         parser.set_defaults(**section_defaults(run_config, "train"))
-    args, passthrough = parser.parse_known_args()
+    args, _ = parser.parse_known_args()
     args.config = _as_path(args.config)
     args.manifest = _as_path(args.manifest)
     args.checkpoint_out = _as_path(args.checkpoint_out)
     args.output_json = _as_path(args.output_json)
     args.resume = _as_path(args.resume)
     args.pretrained_encoder_checkpoint = _as_path(args.pretrained_encoder_checkpoint)
-    args.two_stage_a_checkpoint = _as_path(args.two_stage_a_checkpoint)
     apply_namespace_preset_defaults(args, parser, get_preset("train", args.preset))
     cfg = resolve_config(args)
     experiment = create_experiment(args.experiment)
-    if args.delegate_legacy:
-        import train_dem
-
-        log.info("Delegating experiment '%s' to legacy train_dem entrypoint.", args.experiment)
-        sys.argv = [sys.argv[0], *passthrough]
-        train_dem.main()
-        return
+    experiment.coerce_train_arg_paths(args)
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -311,12 +236,7 @@ def main() -> None:
             skipped,
         )
     loss_fn = experiment.build_loss(model_cfg)
-    trainable_params: Iterable[torch.nn.Parameter]
-    if hasattr(model, "trainable_parameters"):
-        trainable_params = list(model.trainable_parameters())
-    else:
-        trainable_params = list(model.parameters())
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
+    optimizer = torch.optim.AdamW(experiment.iter_trainable_parameters(model), lr=args.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     history: dict[str, list[float]] = {"train_loss": [], "epoch_seconds": []}
@@ -349,12 +269,7 @@ def main() -> None:
         elapsed = time.perf_counter() - epoch_start
         history["train_loss"].append(float(metrics["loss"]))
         history["epoch_seconds"].append(float(elapsed))
-        expert_keys = [k for k in sorted(metrics) if k.startswith("expert_util_")]
-        expert_str = " ".join(f"{k}={metrics[k]:.3f}" for k in expert_keys)
-        if "expert_entropy" in metrics:
-            expert_str = (expert_str + " " if expert_str else "") + f"expert_entropy={metrics['expert_entropy']:.3f}"
-        if "expert_divergence" in metrics:
-            expert_str = (expert_str + " " if expert_str else "") + f"expert_divergence={metrics['expert_divergence']:.4f}"
+        extra_log = experiment.train_epoch_log_suffix(metrics)
         log.info(
             "epoch %d/%d loss=%.6f elev=%.6f slope=%.6f %s(%.1fs)",
             epoch + 1,
@@ -362,7 +277,7 @@ def main() -> None:
             metrics.get("loss", float("nan")),
             metrics.get("elev", float("nan")),
             metrics.get("slope", float("nan")),
-            (expert_str + " ") if expert_str else "",
+            extra_log,
             elapsed,
         )
         epoch_payload = make_training_checkpoint_payload(
@@ -402,9 +317,10 @@ def main() -> None:
         epochs=args.epochs,
         history=history,
         train_size=len(train_subset),
-        config=model_cfg | {"description": resolved_description},
+        config=export_experiment_cli_config(args, cfg) | {"description": resolved_description},
     )
     if args.output_json is not None:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
         log.info("Wrote %s", args.output_json)
 

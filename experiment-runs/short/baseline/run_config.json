@@ -1,0 +1,37 @@
+{
+  "description": "short subset baseline 3ep",
+  "shared": {
+    "data_root": "/data/training",
+    "batch_size": 16,
+    "workers": 3,
+    "amp": true,
+    "precomputed_weight": false,
+    "contour_interval": 10.0,
+    "arch": "film_unet",
+    "loss_preset": "baseline"
+  },
+  "train": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "seed": 42,
+    "manifest": "experiment-runs/short_test_4k8h/manifests/train_hard_4000.txt",
+    "epochs": 3,
+    "lr": 0.0001,
+    "checkpoint_out": "experiment-runs/short/baseline/checkpoints/model.pt",
+    "output_json": "experiment-runs/short/baseline/train_report.json",
+    "loss_system": "preset",
+    "augment_rotflip": true
+  },
+  "eval": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "prediction_source": ["model", "z_lr"],
+    "checkpoint": "experiment-runs/short/baseline/checkpoints/model.pt",
+    "manifest": "experiment-runs/short_test_4k8h/manifests/eval_hard_800.txt",
+    "list_from_root": false,
+    "output_json": null,
+    "patch_table": null,
+    "per_patch_json": null,
+    "stratified_json": null
+  }
+}

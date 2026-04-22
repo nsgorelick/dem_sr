@@ -14,7 +14,7 @@ This repo has been patched to support:
   - external per-patch rasters such as FABDEM
 - export of external comparison DTMs from Earth Engine to the same 10 m patch grid
 - selectable model architectures (`--arch`) and training resume (`--resume`) for architecture experiments
-- selectable contour-aware loss presets (`--loss-preset {baseline,geom,multitask,contour}`) with per-term lambda overrides and shared `--contour-interval` between `train_dem.py` and `eval_dem.py`
+- selectable contour-aware loss presets (`--loss-preset {baseline,geom,multitask,contour}`) with per-term lambda overrides and shared `--contour-interval` between `train_experiment.py` and `eval_experiment.py`
 
 Current environment assumptions:
 
@@ -61,7 +61,7 @@ This is what allows:
 - fast `z_lr` evaluation without reading AE TIFFs
 - raster-vs-truth evaluation for downloaded comparison DTMs
 
-### `train_dem.py`
+### `train_experiment.py`
 
 Current behavior:
 
@@ -147,7 +147,7 @@ Current behavior:
   - `frac_water`
 - summary JSON now records the locked-country pool, filtered final test, and development pool separately when table-driven mode is used
 
-### `eval_dem.py`
+### `eval_experiment.py`
 
 Current behavior:
 
@@ -273,7 +273,7 @@ The commands below are legacy examples from the previous holdout workflow and sh
 source /home/gorelick/venv-cu128/bin/activate
 cd /home/gorelick/projects/DEM
 
-python eval_dem.py \
+python eval_experiment.py \
   --prediction-source model \
   --checkpoint dem_film_unet.pt \
   --manifest holdout_manifest_seed42.txt \
@@ -286,7 +286,7 @@ python eval_dem.py \
 ### Evaluate `z_lr` only
 
 ```bash
-python eval_dem.py \
+python eval_experiment.py \
   --prediction-source z_lr \
   --data-root /data/training \
   --manifest holdout_manifest_seed42.txt \
@@ -298,7 +298,7 @@ python eval_dem.py \
 ### Evaluate model + `z_lr` + FABDEM in one pass
 
 ```bash
-python eval_dem.py \
+python eval_experiment.py \
   --prediction-source model z_lr raster \
   --checkpoint dem_film_unet.pt \
   --manifest holdout_manifest_seed42.txt \
@@ -314,7 +314,7 @@ python eval_dem.py \
 ### Evaluate augmented model + `z_lr` + FABDEM in one pass
 
 ```bash
-python eval_dem.py \
+python eval_experiment.py \
   --prediction-source model z_lr raster \
   --checkpoint dem_film_unet_aug15.pt \
   --manifest holdout_manifest_seed42.txt \
@@ -430,12 +430,12 @@ Known outputs in repo:
 If restarting in a fresh chat, mention:
 
 - `status.md` exists and summarizes repo status
-- `train_dem.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet`, `--loss-preset baseline|geom|multitask|contour` (+ `--contour-interval` and per-term `--lambda-*` overrides), and `--resume` for checkpoint continuation; `eval_dem.py` supports `--arch`, `--contour-interval`, and optional two-checkpoint residual blending (`--blend-checkpoint`, `--blend-weight`, `--blend-arch`)
+- `train_experiment.py` supports `--arch film_unet|gated_unet|xattn_unet|hybrid_tf_unet|rcan_ae_unet`, `--loss-preset baseline|geom|multitask|contour` (+ `--contour-interval` and per-term `--lambda-*` overrides), and `--resume` for checkpoint continuation; `eval_experiment.py` supports `--arch`, `--contour-interval`, multi-source `--prediction-source`, optional sliding-window inference, and two-stage eval flags (`--two-stage-*`) when `--experiment two_stage`
 - `plan.md` tracks architecture experiments and example commands
 - `run_arch_non_au_vs_au.sh` is the primary architecture sweep script and `run_loss_presets_non_au_vs_au.sh` is the sibling contour-aware loss-preset sweep (defaults: `EPOCHS=3`, `HARD_FRACTION=0.10`, hard-patch ranking via `select_hard_patches.py`); both expect `PATCH_TABLE` (current table: `200k.geojson`)
 - performance metrics in this file were intentionally reset and must be regenerated under the new split
 - current split target is: train on non-AU patches, validate on AU patches
 - new training checkpoints store train/val loss curves
-- `eval_dem.py` supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection
+- `eval_experiment.py` supports multi-source evaluation in one pass plus per-patch ranking output for customer-example selection
 - `export_comparison_dtms.py` already exports separate per-product patch rasters from Earth Engine
 - customer-example assets/workflow exist, but any ranking claims should be refreshed from new validation outputs

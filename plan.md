@@ -18,8 +18,8 @@ This document tracks architecture experiments while keeping the same training st
 ## Baseline
 
 - Model: `DemFilmUNet` (`dem_film_unet.py`)
-- Training script: `train_dem.py`
-- Evaluation script: `eval_dem.py`
+- Training script: `train_experiment.py`
+- Evaluation script: `eval_experiment.py`
 - Key reference metrics (from `status.md`): compare new models to current best on
   - elevation RMSE
   - slope RMSE deg
@@ -85,7 +85,7 @@ Use one section per run.
 
 ## Current TODO
 
-- [x] Add architecture selection flag to `train_dem.py` (e.g., `--arch`).
+- [x] Add architecture selection flag to `train_experiment.py` (e.g., `--arch`).
 - [x] Implement candidate #1 (Spatial Gated Fusion U-Net).
 - [x] Implement candidate #2 (Windowed Cross-Attention U-Net).
 - [x] Implement candidate #3 (Hybrid Conv+Transformer bottleneck).
@@ -101,7 +101,7 @@ Use these to compare baseline FiLM vs spatial gated fusion with identical settin
 ### Train baseline (FiLM)
 
 ```bash
-python3 train_dem.py \
+python3 train_experiment.py \
   --arch film_unet \
   --manifest train_manifest_seed42.txt \
   --epochs 6 \
@@ -114,7 +114,7 @@ python3 train_dem.py \
 ### Train candidate #1 (Gated)
 
 ```bash
-python3 train_dem.py \
+python3 train_experiment.py \
   --arch gated_unet \
   --manifest train_manifest_seed42.txt \
   --epochs 6 \
@@ -127,7 +127,7 @@ python3 train_dem.py \
 ### Train candidate #2 (Cross-attn)
 
 ```bash
-python3 train_dem.py \
+python3 train_experiment.py \
   --arch xattn_unet \
   --manifest train_manifest_seed42.txt \
   --epochs 6 \
@@ -140,7 +140,7 @@ python3 train_dem.py \
 ### Train candidate #3 (Hybrid transformer bottleneck)
 
 ```bash
-python3 train_dem.py \
+python3 train_experiment.py \
   --arch hybrid_tf_unet \
   --manifest train_manifest_seed42.txt \
   --epochs 6 \
@@ -153,7 +153,7 @@ python3 train_dem.py \
 ### Train candidate #4 (RCAN+AE)
 
 ```bash
-python3 train_dem.py \
+python3 train_experiment.py \
   --arch rcan_ae_unet \
   --manifest train_manifest_seed42.txt \
   --epochs 6 \
@@ -166,7 +166,7 @@ python3 train_dem.py \
 ### Evaluate checkpoints
 
 ```bash
-python3 eval_dem.py \
+python3 eval_experiment.py \
   --prediction-source model \
   --checkpoint dem_film_unet_arch_film_6ep_epoch_003.pt \
   --manifest holdout_manifest_seed42.txt \
@@ -177,7 +177,7 @@ python3 eval_dem.py \
 ```
 
 ```bash
-python3 eval_dem.py \
+python3 eval_experiment.py \
   --prediction-source model \
   --checkpoint dem_film_unet_arch_gated_6ep_epoch_003.pt \
   --manifest holdout_manifest_seed42.txt \
@@ -188,7 +188,7 @@ python3 eval_dem.py \
 ```
 
 ```bash
-python3 eval_dem.py \
+python3 eval_experiment.py \
   --prediction-source model \
   --arch xattn_unet \
   --checkpoint dem_film_unet_arch_xattn_6ep_epoch_003.pt \
@@ -200,7 +200,7 @@ python3 eval_dem.py \
 ```
 
 ```bash
-python3 eval_dem.py \
+python3 eval_experiment.py \
   --prediction-source model \
   --arch hybrid_tf_unet \
   --checkpoint dem_film_unet_arch_hybrid_tf_6ep_epoch_003.pt \
@@ -212,7 +212,7 @@ python3 eval_dem.py \
 ```
 
 ```bash
-python3 eval_dem.py \
+python3 eval_experiment.py \
   --prediction-source model \
   --arch rcan_ae_unet \
   --checkpoint dem_film_unet_arch_rcan_ae_6ep_epoch_003.pt \
@@ -225,7 +225,7 @@ python3 eval_dem.py \
 
 ## Loss Preset Sweep (contour-aware supervision)
 
-Orthogonal to `--arch`, `train_dem.py` and `eval_dem.py` now expose a
+Orthogonal to `--arch`, `train_experiment.py` and `eval_experiment.py` now expose a
 `--loss-preset` flag that selects a contour-aware loss configuration from
 `contours.md` without changing the dataset or the backbone:
 

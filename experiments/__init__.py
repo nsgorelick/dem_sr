@@ -1,4 +1,4 @@
-"""Experiment registry and implementations for the v2 path."""
+"""Experiment registry, presets, and public helpers for train/eval entrypoints."""
 
 from .config_presets import get_preset, list_presets
 from .registry import create_experiment, list_experiments

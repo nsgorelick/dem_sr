@@ -38,6 +38,8 @@ def make_training_checkpoint_payload(
 
 def save_training_checkpoint(path: Path, payload: dict[str, Any]) -> None:
     """Save training checkpoint payload."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
 
 

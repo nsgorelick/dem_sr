@@ -17,6 +17,7 @@ from typing import Any, Sequence
 
 import ee
 import rasterio
+from requests.adapters import HTTPAdapter
 from rasterio.io import MemoryFile
 
 from adaptive_export_runner import AdaptiveThreadExportRunner, ee_concurrency_error
@@ -48,6 +49,7 @@ HIGHVOL_URL = EE_INIT_KWARGS["opt_url"]
 EE_COMPUTEPIXELS_PARALLEL_PER_PATCH = 2
 DEFAULT_EXPORT_POOL_WORKERS = 50
 SCALE_DOWN_MIN_INTERVAL_SEC = 1.0
+EE_HTTP_POOL_MAXSIZE = 20
 
 _TIF_EXT = ".tif"
 _AE_SUFFIX = "_aef_uint8.tif"
@@ -56,6 +58,23 @@ _AE_SUFFIX = "_aef_uint8.tif"
 _PROGRESS_RATE_WINDOW_SEC = 60.0
 
 ee.Initialize(**EE_INIT_KWARGS)
+
+
+def configure_ee_http_pool(pool_size: int = EE_HTTP_POOL_MAXSIZE) -> None:
+    """Set Earth Engine requests-session HTTP connection pool size."""
+    session = ee.data._get_state().requests_session
+    if session is None:
+        return
+    adapter = HTTPAdapter(
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+        pool_block=True,
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+
+configure_ee_http_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.ERROR)
+    logging.basicConfig(level=logging.INFO)
     logging.getLogger("rasterio._env").setLevel(logging.ERROR)
     args = build_parser().parse_args()
     configure_export_layout(export_dir=args.export_dir, patch_size_pixels=args.patch_size)

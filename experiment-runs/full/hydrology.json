@@ -1,0 +1,58 @@
+{
+  "description": "plan10 hydrology-aware constraints full non-AU train and full AU val pilot",
+  "shared": {
+    "data_root": "/data/training",
+    "batch_size": 32,
+    "workers": 3,
+    "amp": true,
+    "precomputed_weight": false,
+    "contour_interval": 10.0,
+    "arch": "film_unet",
+    "loss_preset": "baseline"
+  },
+  "train": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "seed": 42,
+    "manifest": "experiment-runs/manifests/fraction1/train_non_au_full.txt",
+    "max_patches": null,
+    "epochs": 6,
+    "lr": 0.0001,
+    "checkpoint_out": "experiment-runs/full/hydrology/checkpoints/hydrology_film_unet_6ep.pt",
+    "output_json": "experiment-runs/full/hydrology/train_report.json",
+    "resume": null,
+    "loss_system": "preset",
+    "lambda_elev": 1.0,
+    "lambda_slope": 0.5,
+    "lambda_grad": 0.25,
+    "lambda_curv": 0.1,
+    "lambda_ms": 0.5,
+    "lambda_sdf": 0.5,
+    "lambda_contour": 0.25,
+    "enable_hydro_flow": true,
+    "enable_hydro_pit_spike": true,
+    "lambda_hydro_flow": 0.01,
+    "lambda_hydro_pit_spike": 0.005,
+    "hydro_flow_temperature": 8.0,
+    "hydro_pit_kernel_size": 3,
+    "hydro_water_downweight": 0.95,
+    "hydro_shoreline_downweight": 0.7,
+    "guidance_dropout": 0.3,
+    "augment_rotflip": true
+  },
+  "eval": {
+    "experiment": "baseline",
+    "preset": "baseline",
+    "prediction_source": [
+      "model"
+    ],
+    "checkpoint": "experiment-runs/full/hydrology/checkpoints/hydrology_film_unet_6ep.pt",
+    "manifest": "experiment-runs/manifests/fraction1/val_au_full.txt",
+    "list_from_root": false,
+    "max_patches": null,
+    "output_json": null,
+    "per_patch_json": "experiment-runs/full/hydrology/eval_per_patch.json",
+    "patch_table": "200k.geojson",
+    "stratified_json": "experiment-runs/full/hydrology/eval_stratified.json"
+  }
+}

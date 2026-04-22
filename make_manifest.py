@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 from local_patch_dataset import list_patch_stems
-from patch_table import load_patch_table
+from core.patch_table import load_patch_table
 
 logging.basicConfig(
     level=logging.INFO,

@@ -19,7 +19,7 @@ Pretrain encoders on unlabeled DEM/AE data, then finetune on supervised DEM corr
   - Define augmentations appropriate for topography (avoid harmful transforms).
 - **Training pipeline changes**
   - New pretraining script and checkpoint format.
-  - Weight-loading bridge from SSL checkpoints into `train_dem.py`.
+  - Weight-loading bridge from SSL checkpoints into `train_experiment.py`.
 - **Experiment tracking changes**
   - Track pretrain dataset, objective, epochs, and transfer recipe as required metadata.
 - **Compute planning**

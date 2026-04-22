@@ -37,6 +37,21 @@ METRIC_SUM_KEYS: tuple[str, ...] = (
 
 STRATA_FIELDS: tuple[str, ...] = ("slope_bin", "hydrology_bin", "building_bin", "uncertainty_bin")
 
+PATCH_TABLE_FIELDS: tuple[str, ...] = (
+    "p90_slope",
+    "frac_shore",
+    "frac_water",
+    "has_edge",
+    "frac_building",
+    "mean_uncert",
+    "mean_W",
+    "valid_frac",
+    "gt_coverage_mean",
+    "resid_scale",
+    "relief",
+    "stratum_id",
+)
+
 _contour_interval_m: float = DEFAULT_CONTOUR_INTERVAL_M
 
 

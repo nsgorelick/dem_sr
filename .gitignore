@@ -6,6 +6,11 @@ __pycache__/
 
 # Generated evaluation/export outputs
 *.json
+# Keep checked-in experiment run configs and small manifest metadata.
+!experiment-runs/full/*.json
+!experiment-runs/short/*/run_config.json
+!experiment-runs/manifests/**/*.json
+!experiment-runs/short_test_4k8h/manifests/*.json
 comparison/
 tdem_ingest/
 runs/
@@ -16,3 +21,9 @@ runs/
 # Ignore editor/temp files
 *.swp
 *.swo
+
+# Large local patch table; set path in eval config if needed
+200k.geojson
+
+# Accidental symlink at repo root
+/er

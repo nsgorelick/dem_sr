@@ -39,7 +39,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.ERROR)
+    logging.basicConfig(level=logging.INFO)
     logging.getLogger("rasterio._env").setLevel(logging.ERROR)
     main()
 

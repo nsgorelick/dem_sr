@@ -4,27 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
-_PRESETS: dict[str, dict[str, dict[str, Any]]] = {
-    "train": {
-        "baseline": {},
-        "smoke": {
-            "max_patches": 16,
-            "batch_size": 2,
-            "workers": 0,
-        },
-        "fast-debug": {
-            "max_patches": 64,
-            "batch_size": 4,
-            "workers": 1,
-        },
-        "plan09-composite": {
-            "loss_system": "composite",
-            "lambda_elev": 1.0,
-            "lambda_slope": 0.5,
-            "batch_size": 4,
-            "workers": 1,
-        },
+from experiments.preset_registry import collect_train_preset_entries
+
+_TRAIN_CORE: dict[str, dict[str, Any]] = {
+    "baseline": {},
+    "smoke": {
+        "max_patches": 16,
+        "batch_size": 2,
+        "workers": 0,
     },
+    "fast-debug": {
+        "max_patches": 64,
+        "batch_size": 4,
+        "workers": 1,
+    },
+}
+
+_PRESETS: dict[str, dict[str, dict[str, Any]]] = {
+    "train": {**_TRAIN_CORE, **collect_train_preset_entries()},
     "eval": {
         "baseline": {},
         "smoke": {
@@ -57,4 +54,3 @@ def get_preset(mode: str, name: str) -> dict[str, Any]:
         available = ", ".join(list_presets(mode_key))
         raise KeyError(f"unknown preset '{name}' for mode '{mode}', available: {available}")
     return dict(_PRESETS[mode_key][preset_key])
-

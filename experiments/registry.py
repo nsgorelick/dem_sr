@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from experiments.base import Experiment
-from experiments.baseline_film import BaselineFilmExperiment
-from experiments.frequency_domain import FrequencyDomainExperiment
-from experiments.hydrology import HydrologyExperiment
-from experiments.mixture_specialists import MixtureSpecialistsExperiment
-from experiments.two_stage import TwoStageResidualExperiment
+from experiments.baseline.plan import BaselineFilmExperiment
+from experiments.frequency_domain.plan import FrequencyDomainExperiment
+from experiments.hydrology.plan import HydrologyExperiment
+from experiments.mixture_specialists.plan import MixtureSpecialistsExperiment
+from experiments.two_stage.plan import TwoStageResidualExperiment
 
 _EXPERIMENTS: dict[str, type[Experiment]] = {
     "baseline": BaselineFilmExperiment,
@@ -28,4 +28,3 @@ def create_experiment(name: str) -> Experiment:
         available = ", ".join(list_experiments())
         raise KeyError(f"unknown experiment '{name}', available: {available}")
     return _EXPERIMENTS[key]()
-
