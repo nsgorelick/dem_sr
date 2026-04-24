@@ -27,7 +27,7 @@ from export_progress import ExportProgressLine
 # Configuration
 # ---------------------------------------------------------------------------
 
-PATCH_EXPORT_DIR = Path(".")
+PATCH_EXPORT_DIR = Path("/data/training")
 STACK_EXPORT_DIR = PATCH_EXPORT_DIR / "stack"
 AE_EXPORT_DIR = PATCH_EXPORT_DIR / "ae"
 PATCH_SIZE_PIXELS = 128
@@ -53,6 +53,7 @@ EE_HTTP_POOL_MAXSIZE = 20
 
 _TIF_EXT = ".tif"
 _AE_SUFFIX = "_aef_uint8.tif"
+AE_SUSPICIOUS_FILE_BYTES = 100_000
 
 # Rolling window for progress-line "recent patches/min" (completions in this span).
 _PROGRESS_RATE_WINDOW_SEC = 60.0
@@ -170,6 +171,21 @@ def write_geotiff_zstd(path: Path | str, tif_bytes: bytes, predictor: int) -> No
             raise
     finally:
         _rio_env.setLevel(_saved_rio)
+
+
+def validate_ae_payload(aef_bytes: bytes, *, patch_id: str, patch_size: int) -> None:
+    """Reject AE payloads that are structurally invalid."""
+    with MemoryFile(aef_bytes) as mem:
+        with mem.open() as src:
+            if src.count != 64:
+                raise ValueError(
+                    f"[patch {patch_id}] AE band count mismatch (got {src.count}, expected 64)"
+                )
+            if src.width != patch_size or src.height != patch_size:
+                raise ValueError(
+                    f"[patch {patch_id}] AE shape mismatch "
+                    f"(got {src.width}x{src.height}, expected {patch_size}x{patch_size})"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +558,7 @@ def makeAnnualSatelliteEmbeddingByte(year, zone, px, py, coarse_m=1280):
     proj = ee.Projection(crs)
     center_e = ee.Number(px).multiply(coarse_m)
     center_n = ee.Number(py).multiply(coarse_m)
-    pt = ee.Geometry.Point([center_e, center_n], proj)
+    pt = ee.Geometry.Point([center_e, center_n], proj).buffer(6000)
 
     start = ee.Date.fromYMD(int(year), 1, 1)
     end = start.advance(1, "year")
@@ -556,7 +572,7 @@ def makeAnnualSatelliteEmbeddingByte(year, zone, px, py, coarse_m=1280):
     img = ee.Image(
         ee.Algorithms.If(
             col.size().gt(0),
-            col.first(),
+            col.mosaic(),
             ee.Image.constant([0.0] * 64),
         )
     )
@@ -643,11 +659,24 @@ def export_one_patch(item: dict) -> dict:
             fut_ae = ex.submit(ee.data.computePixels, aef_payload)
             tif_bytes = fut_stack.result()
             aef_bytes = fut_ae.result()
+        validate_ae_payload(
+            aef_bytes,
+            patch_id=out_id,
+            patch_size=PATCH_SIZE_PIXELS,
+        )
 
         write_geotiff_zstd(out_path, tif_bytes, predictor=3)
 
         aef_path = AE_EXPORT_DIR / f"{out_id}_aef_uint8.tif"
         write_geotiff_zstd(aef_path, aef_bytes, predictor=2)
+        ae_size = aef_path.stat().st_size
+        if ae_size < AE_SUSPICIOUS_FILE_BYTES:
+            logging.warning(
+                "[patch %s] AE file is suspiciously small (%d bytes): %s",
+                out_id,
+                ae_size,
+                aef_path,
+            )
     except ee.EEException as exc:
         prefix = f"[patch {out_id}]"
         if ee_path:

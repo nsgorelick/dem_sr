@@ -249,7 +249,7 @@ def main() -> None:
             "config": vars(args) | {"description": resolve_description(run_config, args.config or Path("pretrain"), args.description)},
         }
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
-        args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        args.output_json.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         log.info("Wrote %s", args.output_json)
 
 
