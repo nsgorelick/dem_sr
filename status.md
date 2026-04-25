@@ -101,3 +101,20 @@ Test suite status at last update:
 2. Launch `experiment-runs/full/run.sh` in a resilient session (`tmux`/scheduler).
 3. After completion, compare all model runs against the baseline eval (which includes `z_lr`) on the shared AU manifest.
 4. Record final ranking and promote any tuned follow-up configs as separate named JSON files under `experiment-runs/full/`.
+
+## Patch Table + Export Workflow (Apr 2026)
+
+- patch table downloader now supports:
+  - parallel downloads (`patches/download_patch_tables_compute_features.py --workers N`)
+  - restart-safe writes via `*.part` + atomic rename
+  - both `*_sites_*` and legacy `us_sites4_*` table naming
+- draw/normalization pipeline is scripted in:
+  - `patches/build_training_validation_draws.py`
+- current canonical draw outputs (with `year >= 2017`) are:
+  - `patches/training.geojson` (200k = 100k US + 100k non-US)
+  - `patches/validation.geojson` (50k AU)
+  - `patches/export_manifest_250k.txt` (combined IDs)
+- exporter changed from EE table fetch to manifest-driven selection:
+  - `export_patches_gcs.py --manifest ...`
+  - `export_patches_gcs_512.py --manifest ...`
+- manifest ID parsing reconstructs patch-center coordinates (`+0.5`) so exported boxes match source patch geometry.

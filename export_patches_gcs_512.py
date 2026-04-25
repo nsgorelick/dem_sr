@@ -17,6 +17,12 @@ DEFAULT_PATCH_SIZE = 512
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help="Manifest with one patch id per line (x_y_zone_country_year)",
+    )
+    parser.add_argument(
         "--export-dir",
         type=Path,
         default=DEFAULT_EXPORT_DIR,
@@ -35,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     configure_export_layout(export_dir=args.export_dir, patch_size_pixels=args.patch_size)
-    run_export(pool_workers=args.pool_workers)
+    run_export(manifest=args.manifest, pool_workers=args.pool_workers)
 
 
 if __name__ == "__main__":

@@ -5,12 +5,10 @@ Writes under ``stack/`` and ``ae/`` with ZSTD compression; uses ``.part`` + atom
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
 import argparse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
@@ -88,6 +86,40 @@ def patch_id_from_properties(props: dict[str, Any]) -> str:
     return f"{int(props['x'])}_{int(props['y'])}_{props['zone']}_{props['country']}_{props['year']}"
 
 
+def parse_patch_id(patch_id: str) -> dict[str, Any]:
+    """Parse ``x_y_zone_country_year`` manifest ID to properties.
+
+    Manifest IDs use integer cell indices; source patch centers are at ``*.5``.
+    """
+    parts = patch_id.strip().split("_")
+    if len(parts) != 5:
+        raise ValueError(f"Invalid patch id (expected x_y_zone_country_year): {patch_id!r}")
+    x, y, zone, country, year = parts
+    return {
+        "x": int(x) + 0.5,
+        "y": int(y) + 0.5,
+        "zone": int(zone),
+        "country": country,
+        "year": int(year),
+    }
+
+
+def load_manifest_patch_items(manifest_path: Path) -> list[dict[str, Any]]:
+    """Read one patch ID per line and return export items."""
+    items: list[dict[str, Any]] = []
+    for i, raw in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            props = parse_patch_id(line)
+        except Exception as exc:
+            raise ValueError(f"{manifest_path}:{i}: {exc}") from exc
+        props["path"] = line
+        items.append({"properties": props})
+    return items
+
+
 def configure_export_layout(*, export_dir: Path | str, patch_size_pixels: int) -> None:
     """Configure output directories and patch geometry for this process."""
     global PATCH_EXPORT_DIR, STACK_EXPORT_DIR, AE_EXPORT_DIR
@@ -105,7 +137,8 @@ def configure_export_layout(*, export_dir: Path | str, patch_size_pixels: int) -
 
 def completed_patch_ids_on_disk() -> set[str]:
     """Return patch IDs that have both final stack and AE filenames (``os.listdir`` only)."""
-
+    STACK_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    AE_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     stack_names = os.listdir(STACK_EXPORT_DIR)
     ae_names = frozenset(os.listdir(AE_EXPORT_DIR))
 
@@ -581,35 +614,6 @@ def makeAnnualSatelliteEmbeddingByte(year, zone, px, py, coarse_m=1280):
     return img.multiply(127.5).add(127.5).clamp(0, 255).uint8()
 
 
-def fetch_patch_items(collection_ids: Sequence[str]) -> list[dict]:
-    """Download GeoJSON rows from each Earth Engine feature collection ID (minimal properties).
-
-    Results are concatenated in order; each feature's ``properties.path`` is
-    ``{collection_id}/{feature_id}``.
-    """
-    selectors = ["system:index", "x", "y", "zone", "year", "country"]
-    items: list[dict] = []
-    for collection_path in collection_ids:
-        fc = (
-            ee.FeatureCollection(collection_path)
-            .filter(
-                ee.Filter.And(
-                    ee.Filter.gte("year", SATELLITE_EMBEDDING_MIN_YEAR),
-                    ee.Filter.lte("year", SATELLITE_EMBEDDING_MAX_YEAR),
-                )
-            )
-        )
-        url = fc.getDownloadURL(filetype="geojson", selectors=selectors)
-        with urllib.request.urlopen(url) as response:
-            raw = response.read()
-        payload = json.loads(raw.decode("utf-8"))
-        for feat in payload["features"]:
-            fid = collection_path + "/" + str(feat["id"])
-            feat["properties"]["path"] = fid
-            items.append(feat)
-    return items
-
-
 def _export_concurrency_error(exc: BaseException) -> bool:
     """Treat connection-pool saturation as overload so adaptive runner scales down."""
     if ee_concurrency_error(exc):
@@ -690,19 +694,15 @@ def export_one_patch(item: dict) -> dict:
     }
 
 
-def run_export(pool_workers: int | None = None) -> None:
-    collection_ids = [
-        "users/ngorelick/DTM/tmp/sample_us_100k",
-        "users/ngorelick/DTM/tmp/sample_100k"
-    ]
-    items = fetch_patch_items(collection_ids)
+def run_export(*, manifest: Path, pool_workers: int | None = None) -> None:
+    items = load_manifest_patch_items(manifest)
     completed = completed_patch_ids_on_disk()
     n_all = len(items)
     items = filter_pending_patch_items(items, completed)
     skipped = n_all - len(items)
     total = len(items)
     print(
-        f"catalog {n_all} patches, {skipped} already on disk, {total} to export",
+        f"manifest {manifest} has {n_all} patches, {skipped} already on disk, {total} to export",
         flush=True,
     )
     if not items:
@@ -745,7 +745,13 @@ def run_export(pool_workers: int | None = None) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--export-dir", type=Path, default=Path("."), help="Parent output directory (contains stack/ and ae/)")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help="Manifest with one patch id per line (x_y_zone_country_year)",
+    )
+    parser.add_argument("--export-dir", type=Path, default=PATCH_EXPORT_DIR, help="Parent output directory (contains stack/ and ae/)")
     parser.add_argument("--patch-size", type=int, default=128, help="Patch size in pixels at 10m resolution")
     parser.add_argument("--pool-workers", type=int, default=None, help="Initial worker pool size")
     return parser
@@ -756,4 +762,4 @@ if __name__ == "__main__":
     logging.getLogger("rasterio._env").setLevel(logging.ERROR)
     args = build_parser().parse_args()
     configure_export_layout(export_dir=args.export_dir, patch_size_pixels=args.patch_size)
-    run_export(pool_workers=args.pool_workers)
+    run_export(manifest=args.manifest, pool_workers=args.pool_workers)
