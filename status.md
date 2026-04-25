@@ -17,9 +17,13 @@ Environment assumptions:
 
 - repo: `/home/gorelick/projects/DEM`
 - training data root: `/data/training`
-- canonical full manifests:
+- canonical experiment manifests (training/eval runs):
   - `experiment-runs/manifests/fraction1/train_non_au_full.txt`
   - `experiment-runs/manifests/fraction1/val_au_full.txt`
+- canonical export manifests (patch production):
+  - `patches/training_manifest.txt`
+  - `patches/validation_manifest.txt`
+  - `patches/export_manifest_250k.txt`
 
 ## Current Experiment Layout
 
@@ -75,8 +79,14 @@ Execution helper:
 
 Active protocol for new comparisons:
 
-- train split: all non-AU patches
-- validation split: AU patches
+- train split: 200k total = 100k US + 100k non-US
+- validation split: 50k AU
+- year constraint: include only patches with `year >= 2017`
+- selection pipeline: `patches/build_training_validation_draws.py`
+- canonical outputs:
+  - `patches/training.geojson`
+  - `patches/validation.geojson`
+  - `patches/export_manifest_250k.txt`
 
 Old random holdout metrics are legacy and should not be used for current model ranking.
 
@@ -84,7 +94,7 @@ Old random holdout metrics are legacy and should not be used for current model r
 
 Test suite status at last update:
 
-- `python3 -m unittest discover -s . -p 'test_*.py'`
+- `~/venv-cu128/bin/python -m unittest discover -s . -p 'test_*.py'`
 - result: `Ran 80 tests ... OK`
 
 ## Repo Hygiene Changes
@@ -97,9 +107,9 @@ Test suite status at last update:
 
 ## Immediate Next Steps
 
-1. Verify GPU/disk budget for per-epoch checkpoints across all full runs.
-2. Launch `experiment-runs/full/run.sh` in a resilient session (`tmux`/scheduler).
-3. After completion, compare all model runs against the baseline eval (which includes `z_lr`) on the shared AU manifest.
+1. Continue export from `patches/export_manifest_250k.txt` using manifest-driven `export_patches_gcs.py`.
+2. Monitor and triage export skips (e.g., masked/empty source areas) separately from successful patch exports.
+3. Run/compare full experiments using the canonical experiment manifests under `experiment-runs/manifests/fraction1/`.
 4. Record final ranking and promote any tuned follow-up configs as separate named JSON files under `experiment-runs/full/`.
 
 ## Patch Table + Export Workflow (Apr 2026)
