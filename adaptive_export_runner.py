@@ -132,6 +132,7 @@ class AdaptiveThreadExportRunner:
         min_concurrent: int = 1,
         max_concurrent: int = 20,
         initial_concurrent: int | None = None,
+        startup_spread_sec: float = 0.0,
         quiet_before_scale_up_sec: float = 45.0,
         scale_down_step: int = 1,
         scale_down_min_interval_sec: float = 1.0,
@@ -145,6 +146,7 @@ class AdaptiveThreadExportRunner:
         self._high = max_concurrent
         start = initial_concurrent if initial_concurrent is not None else max_concurrent
         self._gate = _ConcurrencyGate(self._low, self._high, start)
+        self._startup_spread_sec = max(0.0, startup_spread_sec)
         self._quiet_sec = quiet_before_scale_up_sec
         self._scale_down_step = max(1, scale_down_step)
         self._scale_down_min_interval_sec = max(0.0, scale_down_min_interval_sec)
@@ -275,8 +277,22 @@ class AdaptiveThreadExportRunner:
                 pending.add(ex.submit(wrapped, item))
                 return True
 
-            for _ in range(min(max_pending, total)):
-                submit_next()
+            startup_submits = min(max_pending, total)
+            if startup_submits <= 0:
+                return
+            if startup_submits == 1 or self._startup_spread_sec <= 0:
+                for _ in range(startup_submits):
+                    submit_next()
+            else:
+                # Spread initial request burst across ``startup_spread_sec``.
+                startup_step_sec = self._startup_spread_sec / float(startup_submits - 1)
+                next_submit_at = time.monotonic()
+                for _ in range(startup_submits):
+                    now = time.monotonic()
+                    if now < next_submit_at:
+                        time.sleep(next_submit_at - now)
+                    submit_next()
+                    next_submit_at += startup_step_sec
 
             while pending:
                 finished, _ = wait(pending, return_when=FIRST_COMPLETED)

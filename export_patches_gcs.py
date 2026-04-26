@@ -30,7 +30,9 @@ STACK_EXPORT_DIR = PATCH_EXPORT_DIR / "stack"
 AE_EXPORT_DIR = PATCH_EXPORT_DIR / "ae"
 PATCH_SIZE_PIXELS = 128
 PATCH_SCALE_M = 10
-PATCH_COARSE_M = PATCH_SIZE_PIXELS * PATCH_SCALE_M
+# Patch IDs are indexed on the original 128x128 (1280 m) training grid.
+# Keep this stride fixed even when exporting larger windows (e.g., 512x512).
+PATCH_GRID_STRIDE_M = 1280
 
 EE_INIT_KWARGS: dict[str, str] = {
     "opt_url": "https://earthengine-highvolume.googleapis.com",
@@ -47,6 +49,7 @@ HIGHVOL_URL = EE_INIT_KWARGS["opt_url"]
 EE_COMPUTEPIXELS_PARALLEL_PER_PATCH = 2
 DEFAULT_EXPORT_POOL_WORKERS = 50
 SCALE_DOWN_MIN_INTERVAL_SEC = 1.0
+STARTUP_SUBMISSION_SPREAD_SEC = 5.0
 EE_HTTP_POOL_MAXSIZE = 20
 
 _TIF_EXT = ".tif"
@@ -123,7 +126,7 @@ def load_manifest_patch_items(manifest_path: Path) -> list[dict[str, Any]]:
 def configure_export_layout(*, export_dir: Path | str, patch_size_pixels: int) -> None:
     """Configure output directories and patch geometry for this process."""
     global PATCH_EXPORT_DIR, STACK_EXPORT_DIR, AE_EXPORT_DIR
-    global PATCH_SIZE_PIXELS, PATCH_COARSE_M
+    global PATCH_SIZE_PIXELS
 
     patch_size_pixels = int(patch_size_pixels)
     if patch_size_pixels <= 0:
@@ -132,7 +135,6 @@ def configure_export_layout(*, export_dir: Path | str, patch_size_pixels: int) -
     STACK_EXPORT_DIR = PATCH_EXPORT_DIR / "stack"
     AE_EXPORT_DIR = PATCH_EXPORT_DIR / "ae"
     PATCH_SIZE_PIXELS = patch_size_pixels
-    PATCH_COARSE_M = PATCH_SIZE_PIXELS * PATCH_SCALE_M
 
 
 def completed_patch_ids_on_disk() -> set[str]:
@@ -657,7 +659,13 @@ def export_one_patch(item: dict) -> dict:
     ee_path = props.get("path", "")
 
     try:
-        grid = grid_snap10m(px, py, scale_m=PATCH_SCALE_M, size=PATCH_SIZE_PIXELS, coarse_m=PATCH_COARSE_M)
+        grid = grid_snap10m(
+            px,
+            py,
+            scale_m=PATCH_SCALE_M,
+            size=PATCH_SIZE_PIXELS,
+            coarse_m=PATCH_GRID_STRIDE_M,
+        )
         grid["crsCode"] = _utm_crs_code(zone)
         stack, band_ids = makeStack(country, year, zone)
         payload = {
@@ -666,7 +674,13 @@ def export_one_patch(item: dict) -> dict:
             "bandIds": list(band_ids),
             "grid": grid,
         }
-        aef_image = makeAnnualSatelliteEmbeddingByte(year, zone, px, py, coarse_m=PATCH_COARSE_M)
+        aef_image = makeAnnualSatelliteEmbeddingByte(
+            year,
+            zone,
+            px,
+            py,
+            coarse_m=PATCH_GRID_STRIDE_M,
+        )
         aef_payload = {
             "expression": aef_image,
             "fileFormat": "GEO_TIFF",
@@ -730,6 +744,7 @@ def run_export(*, manifest: Path, pool_workers: int | None = None) -> None:
         min_concurrent=1,
         max_concurrent=pool_workers * 2,
         initial_concurrent=pool_workers,
+        startup_spread_sec=STARTUP_SUBMISSION_SPREAD_SEC,
         quiet_before_scale_up_sec=10.0,
         scale_down_step=1,
         scale_down_min_interval_sec=SCALE_DOWN_MIN_INTERVAL_SEC,

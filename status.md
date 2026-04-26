@@ -128,3 +128,17 @@ Test suite status at last update:
   - `export_patches_gcs.py --manifest ...`
   - `export_patches_gcs_512.py --manifest ...`
 - manifest ID parsing reconstructs patch-center coordinates (`+0.5`) so exported boxes match source patch geometry.
+
+## Exporter Fixes (Apr 2026)
+
+- fixed 512-export georeferencing bug:
+  - patch-grid stride is now fixed at `1280m` (`PATCH_GRID_STRIDE_M`) regardless of output patch size
+  - this keeps `patches_512` centers aligned with base patches while expanding only extent
+- added `--http-pool-size` passthrough to `export_patches_gcs_512.py` to match `export_patches_gcs.py`
+- added startup request pacing to adaptive export runner:
+  - `AdaptiveThreadExportRunner(..., startup_spread_sec=...)`
+  - `export_patches_gcs.py` now spreads initial submissions across `5s` to avoid startup request bursts
+- validated current `data/training/patches_512` outputs against base `data/training`:
+  - matching CRS + centers
+  - `512x512` windows are `4x` extent of `128x128` windows at same 10m resolution
+  - AE files are no longer tiny constant placeholders
