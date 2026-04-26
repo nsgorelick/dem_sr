@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import urllib.error
+import sys
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -38,12 +39,37 @@ class RollingCompletionWindow:
 
 def ee_concurrency_error(exc: BaseException) -> bool:
     """Heuristic: treat as Earth Engine / HTTP overload (shrink concurrency)."""
-    if isinstance(exc, urllib.error.HTTPError) and exc.code in (429, 503):
-        return True
-    msg = str(exc).lower()
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if isinstance(cur, urllib.error.HTTPError) and cur.code in (429, 503):
+            return True
+        # Some exception types carry status codes as attrs.
+        for attr in ("code", "status", "status_code", "http_status"):
+            v = getattr(cur, attr, None)
+            try:
+                vi = int(v)
+            except (TypeError, ValueError):
+                vi = None
+            if vi in (429, 503):
+                return True
+        msg = str(cur).lower()
+        # EE often wraps HTTP status inside EEException text rather than raising HTTPError directly.
+        if "429" in msg or "503" in msg:
+            return True
+        # Traverse wrapped causes/contexts.
+        if isinstance(getattr(cur, "__cause__", None), BaseException):
+            stack.append(cur.__cause__)  # type: ignore[arg-type]
+        if isinstance(getattr(cur, "__context__", None), BaseException):
+            stack.append(cur.__context__)  # type: ignore[arg-type]
     needles = (
         "concurrent",
         "too many",
+        "too many requests",
         "rate limit",
         "quota",
         "throttl",
@@ -145,6 +171,7 @@ class AdaptiveThreadExportRunner:
 
     def _on_concurrency_error(self) -> None:
         now = time.monotonic()
+        did_shrink = False
         with self._policy_lock:
             self._last_concurrency_error_at = now
             if self._scale_down_min_interval_sec > 0:
@@ -154,7 +181,16 @@ class AdaptiveThreadExportRunner:
                 ):
                     return
                 self._last_scale_down_at = now
-        self._gate.shrink_on_overload(self._scale_down_step)
+            before = self._gate.limit
+            self._gate.shrink_on_overload(self._scale_down_step)
+            after = self._gate.limit
+            did_shrink = after < before
+        if did_shrink:
+            print(
+                f"\n[adaptive] overload detected; cap {before}->{after}/{self._high}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _on_success(self) -> None:
         now = time.monotonic()

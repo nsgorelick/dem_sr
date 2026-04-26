@@ -391,6 +391,14 @@ def makeCollectionUS(year, zone):
     )
     return dtm
 
+def makeCollectionES(year, zone):
+    zone = makeUTMZone(zone)
+    date = ee.Date.fromYMD(year, 1, 1) 
+    es = (ee.ImageCollection("projects/earthengine-public/assets/PREP/simonf/DEM1/spain")
+        .filterBounds(zone)
+        .filterDate(date, date.advance(1, 'year')))
+    return es
+
 
 def makeCollection(country, year, zone):
     """Dispatch to country-specific HR collection builder."""
@@ -403,6 +411,7 @@ def makeCollection(country, year, zone):
         "AU": makeCollectionAU,
         "NORDIC": makeCollectionNordic,
         "US": makeCollectionUS,
+        "ES": makeCollectionES,
     }
     if country not in builders:
         raise ValueError(f"Unsupported country: {country}")
@@ -620,7 +629,13 @@ def _export_concurrency_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return (
-        "connection pool is full" in msg
+        " 429" in msg
+        or "http 429" in msg
+        or "status code 429" in msg
+        or " 503" in msg
+        or "http 503" in msg
+        or "status code 503" in msg
+        or "connection pool is full" in msg
         or ("connection pool" in msg and "full" in msg)
     )
 
@@ -754,12 +769,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export-dir", type=Path, default=PATCH_EXPORT_DIR, help="Parent output directory (contains stack/ and ae/)")
     parser.add_argument("--patch-size", type=int, default=128, help="Patch size in pixels at 10m resolution")
     parser.add_argument("--pool-workers", type=int, default=None, help="Initial worker pool size")
+    parser.add_argument(
+        "--http-pool-size",
+        type=int,
+        default=EE_HTTP_POOL_MAXSIZE,
+        help="EE requests-session HTTP pool size (default: %(default)s)",
+    )
     return parser
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.ERROR)
     logging.getLogger("rasterio._env").setLevel(logging.ERROR)
     args = build_parser().parse_args()
+    configure_ee_http_pool(args.http_pool_size)
     configure_export_layout(export_dir=args.export_dir, patch_size_pixels=args.patch_size)
     run_export(manifest=args.manifest, pool_workers=args.pool_workers)
